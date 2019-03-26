@@ -64,6 +64,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Mqtt
 
             this.channel.Handle(pgMessage);
             Events.SendMessage(this.Identity);
+            GC.Collect();
             return Task.FromResult(true);
         }
 
@@ -78,6 +79,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Mqtt
                 message.SystemProperties[SystemProperties.OutboundUri] = Constants.OutboundUriModuleEndpoint;
                 IProtocolGatewayMessage pgMessage = this.messageConverter.FromMessage(message);
                 this.channel.Handle(pgMessage);
+                GC.Collect();
                 result = true;
             }
 
