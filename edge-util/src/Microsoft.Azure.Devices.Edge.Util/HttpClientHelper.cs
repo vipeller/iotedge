@@ -19,14 +19,14 @@ namespace Microsoft.Azure.Devices.Edge.Util
             if (serverUri.Scheme.Equals(HttpScheme, StringComparison.OrdinalIgnoreCase) || serverUri.Scheme.Equals(HttpsScheme, StringComparison.OrdinalIgnoreCase))
             {
                 client = new HttpClient();
-                client.Timeout = TimeSpan.FromSeconds(150);
+                client.Timeout = TimeSpan.FromSeconds(300);
                 return client;
             }
 
             if (serverUri.Scheme.Equals(UnixScheme, StringComparison.OrdinalIgnoreCase))
             {
                 client = new HttpClient(new HttpUdsMessageHandler(serverUri));
-                client.Timeout = TimeSpan.FromSeconds(150);
+                client.Timeout = TimeSpan.FromSeconds(300);
                 return client;
             }
 
