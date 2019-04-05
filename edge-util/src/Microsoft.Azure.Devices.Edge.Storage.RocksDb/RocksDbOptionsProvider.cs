@@ -63,6 +63,9 @@ namespace Microsoft.Azure.Devices.Edge.Storage.RocksDb
                 options.SetMaxBytesForLevelBase(MaxBytesForLevelBase);
                 options.SetSoftPendingCompactionBytesLimit(SoftPendingCompactionBytes);
                 options.SetHardPendingCompactionBytesLimit(HardPendingCompactionBytes);
+
+                options.SetStatsDumpPeriodSec(600);
+                options.EnableStatistics();
             }
 
             return options;
