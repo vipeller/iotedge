@@ -17,6 +17,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Service.Modules
     using Microsoft.Azure.Devices.Edge.Util.Edged;
     using Microsoft.Extensions.Logging;
     using Constants = Microsoft.Azure.Devices.Edge.Hub.Service.Constants;
+    using DbStoreProvider = Microsoft.Azure.Devices.Edge.Storage.LiteDb.DbStoreProvider;
 
     public class CommonModule : Module
     {
@@ -125,7 +126,6 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Service.Modules
                             try
                             {
                                 IDbStoreProvider dbStoreprovider = DbStoreProvider.Create(
-                                    c.Resolve<IRocksDbOptionsProvider>(),
                                     this.storagePath,
                                     partitionsList);
                                 logger.LogInformation($"Created persistent store at {this.storagePath}");
