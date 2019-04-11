@@ -11,7 +11,7 @@ set -e
 ###############################################################################
 SCRIPT_NAME=$(basename "$0")
 RUSTUP="$HOME/.cargo/bin/rustup"
-TOOLCHAIN="stable"
+TOOLCHAIN="1.32.0"
 ARM_PACKAGE=
 BUILD_REPOSITORY_LOCALPATH=${BUILD_REPOSITORY_LOCALPATH:-$DIR/../../..}
 PROJECT_ROOT=${BUILD_REPOSITORY_LOCALPATH}/edgelet
