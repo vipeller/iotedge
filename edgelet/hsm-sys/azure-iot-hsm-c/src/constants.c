@@ -26,4 +26,4 @@ const char* const OWNER_CA_COMMON_NAME = "Test Edge Owner CA";
 const char* const DEVICE_CA_COMMON_NAME = "Test Edge Device CA";
 const char* const EDGE_CA_ALIAS = "iotedged_ca";
 const char* const EDGE_CA_COMMON_NAME = "Test Iotedge CA";
-const uint64_t CA_VALIDITY = 300; // 5 minutes
+const uint64_t CA_VALIDITY = 600; // 10 minutes
