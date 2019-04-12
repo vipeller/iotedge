@@ -274,7 +274,7 @@ namespace LeafDeviceTest
 
                 if (result.Status != 200)
                 {
-                    throw new Exception("Could not invoke Direct Method on Device.");
+                    throw new Exception($"Could not invoke Direct Method on Device with status code {result.Status}.");
                 }
 
                 if (!result.GetPayloadAsJson().Equals("{\"TestKey\":\"TestValue\"}", StringComparison.Ordinal))
