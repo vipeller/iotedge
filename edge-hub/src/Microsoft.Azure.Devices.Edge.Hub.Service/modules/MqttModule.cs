@@ -52,7 +52,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Service.Modules
                     c =>
                     {
                         // TODO - We should probably also use some heuristics to make this determination, like how much memory does the system have.
-                        return this.optimizeForPerformance ? PooledByteBufferAllocator.Default : UnpooledByteBufferAllocator.Default as IByteBufferAllocator;
+                        return this.optimizeForPerformance ? PooledByteBufferAllocator.Default : PooledByteBufferAllocator.Default as IByteBufferAllocator;
                     })
                 .As<IByteBufferAllocator>()
                 .SingleInstance();
