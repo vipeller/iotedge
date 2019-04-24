@@ -49,16 +49,36 @@ impl Tpm {
             Err(ErrorKind::NullResponse)?
         }
         let interface = unsafe { *if_ptr };
-        if let Some(handle) = interface.hsm_client_tpm_create.map(|f| unsafe { f() }) {
-            if handle.is_null() {
+        let mut count = 0;
+        loop {
+            if let Some(handle) = interface.hsm_client_tpm_create.map(|f| unsafe { f() }) {
+                if !handle.is_null() {
+                    break Ok(Tpm { handle, interface });
+                }
+                else {
+                    count +=1;
+                    if count > 10 {
+                        unsafe { hsm_client_tpm_deinit() };
+                        Err(ErrorKind::NullResponse)?
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(12_u64));
+                }
+            } else {
+                // tpm create doesn't exist in interface.
                 unsafe { hsm_client_tpm_deinit() };
                 Err(ErrorKind::NullResponse)?
             }
-            Ok(Tpm { handle, interface })
-        } else {
-            unsafe { hsm_client_tpm_deinit() };
-            Err(ErrorKind::NullResponse)?
         }
+        // if let Some(handle) = interface.hsm_client_tpm_create.map(|f| unsafe { f() }) {
+        //     if handle.is_null() {
+        //         unsafe { hsm_client_tpm_deinit() };
+        //         Err(ErrorKind::NullResponse)?
+        //     }
+        //     Ok(Tpm { handle, interface })
+        // } else {
+        //     unsafe { hsm_client_tpm_deinit() };
+        //     Err(ErrorKind::NullResponse)?
+        // }
     }
 }
 
