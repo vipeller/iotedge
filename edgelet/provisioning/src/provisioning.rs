@@ -14,7 +14,7 @@ use serde_json;
 use url::Url;
 
 use dps::registration::{DpsAuthKind, DpsClient, DpsTokenSource};
-use edgelet_core::crypto::{Activate, KeyIdentity, KeyStore, MemoryKey, MemoryKeyStore};
+use edgelet_core::crypto::{Activate, KeyIdentity, KeyStore, MemoryKey, MemoryKeyStore, Certificate};
 use edgelet_hsm::tpm::{TpmKey, TpmKeyStore};
 use edgelet_http::client::{Client as HttpClient, ClientImpl};
 use edgelet_utils::log_failure;
@@ -302,6 +302,65 @@ where
             ),
             Err(err) => Either::B(future::err(Error::from(err.context(ErrorKind::Provision)))),
         };
+        Box::new(d)
+    }
+}
+
+#[allow(dead_code)]
+pub struct DpsX509HybridProvisioning<C, I>
+where
+    C: ClientImpl,
+    I: Certificate
+{
+    client: HttpClient<C, DpsTokenSource<MemoryKey>>,
+    scope_id: String,
+    registration_id: String,
+    identity_cert: I
+}
+
+
+impl<C, I> DpsX509HybridProvisioning<C, I>
+where
+    C: ClientImpl,
+    I: Certificate
+{
+    pub fn new(
+        client_impl: C,
+        endpoint: Url,
+        scope_id: String,
+        registration_id: String,
+        api_version: String,
+        identity_cert: I
+    ) -> Result<Self, Error> {
+        let client = HttpClient::new(
+            client_impl,
+            None as Option<DpsTokenSource<MemoryKey>>,
+            api_version,
+            endpoint,
+        )
+        .context(ErrorKind::DpsInitialization)?;
+        let result = DpsX509HybridProvisioning {
+            client,
+            scope_id,
+            registration_id,
+            identity_cert,
+        };
+        Ok(result)
+    }
+}
+
+impl<C, I> Provision for DpsX509HybridProvisioning<C, I>
+where
+    C: 'static + ClientImpl,
+    I: Certificate
+{
+    type Hsm = MemoryKeyStore;
+
+    fn provision(
+        self,
+        _key_activator: Self::Hsm,
+    ) -> Box<dyn Future<Item = ProvisioningResult, Error = Error> + Send> {
+        let d = Future::from_err(future::err(Error::from(ErrorKind::Provision)));
         Box::new(d)
     }
 }

@@ -43,20 +43,21 @@ use docker::models::HostConfig;
 use dps::DPS_API_VERSION;
 use edgelet_config::{
     AttestationMethod, Dps, Manual, Provisioning, Settings, SymmetricKeyAttestationInfo,
-    TpmAttestationInfo, DEFAULT_CONNECTION_STRING,
+    TpmAttestationInfo, DEFAULT_CONNECTION_STRING, X509AttestationInfo
 };
 use edgelet_core::crypto::{
     Activate, CreateCertificate, Decrypt, DerivedKeyStore, Encrypt, GetIssuerAlias, GetTrustBundle,
     KeyIdentity, KeyStore, MasterEncryptionKey, MemoryKey, MemoryKeyStore, Sign, IOTEDGED_CA_ALIAS,
+    GetDeviceIdentityCertificate,
 };
 use edgelet_core::watchdog::Watchdog;
 use edgelet_core::{
     Certificate, CertificateIssuer, CertificateProperties, CertificateType, ModuleRuntime,
-    ModuleSpec, UrlExt, WorkloadConfig, UNIX_SCHEME,
+    ModuleSpec, UrlExt, WorkloadConfig, UNIX_SCHEME
 };
 use edgelet_docker::{DockerConfig, DockerModuleRuntime};
 use edgelet_hsm::tpm::{TpmKey, TpmKeyStore};
-use edgelet_hsm::{Crypto, HsmLock};
+use edgelet_hsm::{Crypto, X509, HsmLock};
 use edgelet_http::certificate_manager::CertificateManager;
 use edgelet_http::client::{Client as HttpClient, ClientImpl};
 use edgelet_http::logging::LoggingService;
@@ -69,7 +70,7 @@ use hsm::ManageTpmKeys;
 use iothubservice::DeviceClient;
 use provisioning::provisioning::{
     BackupProvisioning, DpsSymmetricKeyProvisioning, DpsTpmProvisioning, ManualProvisioning,
-    Provision, ProvisioningResult, ReprovisioningStatus,
+    Provision, ProvisioningResult, ReprovisioningStatus, DpsX509HybridProvisioning
 };
 
 use crate::workload::WorkloadData;
@@ -272,7 +273,7 @@ impl Main {
                 let dps_path = cache_subdir_path.join(EDGE_PROVISIONING_BACKUP_FILENAME);
 
                 macro_rules! start_edgelet {
-                    ($key_store:ident, $provisioning_result:ident, $root_key:ident, $runtime:ident) => {{
+                    ($key_store:ident, $provisioning_result:ident, $root_key:ident, $runtime:ident, $x509:ident) => {{
                         info!("Finished provisioning edge device.");
 
                         let cfg = WorkloadData::new(
@@ -292,6 +293,7 @@ impl Main {
                                 signal::shutdown(),
                                 &crypto,
                                 &mut tokio_runtime,
+                                &$x509,
                             )?;
                             code == StartApiReturnStatus::Restart
                         } {}
@@ -311,7 +313,7 @@ impl Main {
                                 tpm,
                                 hsm_lock.clone(),
                             )?;
-                        start_edgelet!(key_store, provisioning_result, root_key, runtime);
+                        start_edgelet!(key_store, provisioning_result, root_key, runtime, None);
                     }
                     AttestationMethod::SymmetricKey(ref symmetric_key_info) => {
                         info!("Starting provisioning edge device via symmetric key...");
@@ -324,11 +326,22 @@ impl Main {
                                 &mut tokio_runtime,
                                 symmetric_key_info,
                             )?;
-                        start_edgelet!(key_store, provisioning_result, root_key, runtime);
+                        start_edgelet!(key_store, provisioning_result, root_key, runtime, None);
                     }
-                    AttestationMethod::X509(ref _x509) => {
-                        panic!("Provisioning of Edge device via x509 is currently unsupported");
-                        // TODO: implement
+                    AttestationMethod::X509(ref x509_info) => {
+                        let x509 = X509::new(hsm_lock.clone())
+                            .context(ErrorKind::Initialize(InitializeErrorReason::Hsm))?;
+                        let (key_store, provisioning_result, root_key, runtime) =
+                            dps_x509_provision(
+                                &x509,
+                                &dps,
+                                hyper_client.clone(),
+                                dps_path,
+                                runtime,
+                                &mut tokio_runtime,
+                                x509_info.clone()
+                            )?;
+                        start_edgelet!(key_store, provisioning_result, root_key, runtime, Some(x509_info));
                     }
                 }
             }
@@ -528,7 +541,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn start_api<HC, K, F, C, W>(
+fn start_api<HC, K, F, C, W, X>(
     settings: &Settings<DockerConfig>,
     hyper_client: HC,
     runtime: &DockerModuleRuntime,
@@ -537,6 +550,7 @@ fn start_api<HC, K, F, C, W>(
     root_key: K,
     shutdown_signal: F,
     crypto: &C,
+    _x509: Option<&X>,
     tokio_runtime: &mut tokio::runtime::Runtime,
 ) -> Result<StartApiReturnStatus, Error>
 where
@@ -548,6 +562,11 @@ where
         + Encrypt
         + GetTrustBundle
         + MasterEncryptionKey
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    X: GetDeviceIdentityCertificate
         + Clone
         + Send
         + Sync
@@ -694,6 +713,53 @@ fn manual_provision(
                 })
         });
     tokio_runtime.block_on(provision)
+}
+
+fn dps_x509_provision<HC, M, X>(
+    x509: &X,
+    provisioning: &Dps,
+    hyper_client: HC,
+    backup_path: PathBuf,
+    runtime: M,
+    tokio_runtime: &mut tokio::runtime::Runtime,
+    x509_info: &X509AttestationInfo,
+) -> Result<(DerivedKeyStore<MemoryKey>, ProvisioningResult, MemoryKey, M), Error>
+where
+    HC: 'static + ClientImpl,
+    M: ModuleRuntime + Send + 'static,
+    X: GetDeviceIdentityCertificate
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    let mut memory_hsm = MemoryKeyStore::new();
+
+    let device_identity_cert = crypto.get().context(ErrorKind::Initialize(
+        InitializeErrorReason::DpsProvisioningClient,
+    ))?;
+
+    let reg_id = match x509.registration_id() {
+        Some(id) => id.to_string(),
+        None => {
+            device_identity_cert.get_common_name()
+        }
+    };
+
+    let dps = DpsX509HybridProvisioning::new(
+        hyper_client,
+        provisioning.global_endpoint().clone(),
+        provisioning.scope_id().to_string(),
+        reg_id,
+        DPS_API_VERSION.to_string(),
+        device_identity_cert
+    )
+    .context(ErrorKind::Initialize(
+        InitializeErrorReason::DpsProvisioningClient,
+    ))?;
+
+    panic!("Not yet implemented");
+
 }
 
 fn dps_symmetric_key_provision<HC, M>(
