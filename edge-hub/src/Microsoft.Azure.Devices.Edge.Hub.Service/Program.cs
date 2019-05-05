@@ -51,6 +51,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Service
             IContainer container = hosting.Container;
 
             ILogger logger = container.Resolve<ILoggerFactory>().CreateLogger("EdgeHub");
+            logger.LogInformation($"IsServerGC={System.Runtime.GCSettings.IsServerGC}");
             logger.LogInformation("Initializing Edge Hub");
             LogLogo(logger);
             LogVersionInfo(logger);
