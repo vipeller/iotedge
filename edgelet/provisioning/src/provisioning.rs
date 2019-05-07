@@ -358,9 +358,39 @@ where
 
     fn provision(
         self,
-        _key_activator: Self::Hsm,
+        key_activator: Self::Hsm,
     ) -> Box<dyn Future<Item = ProvisioningResult, Error = Error> + Send> {
-        let d = Future::from_err(future::err(Error::from(ErrorKind::Provision)));
+        let c = DpsClient::new(
+            self.client.clone(),
+            self.scope_id.clone(),
+            self.registration_id.clone(),
+            DpsAuthKind::SymmetricKey,
+            key_activator,
+        );
+
+        let d = match c {
+            Ok(c) => Either::A(
+                c.register()
+                    .map(|(device_id, hub_name, substatus)| {
+                        info!(
+                            "DPS registration assigned device \"{}\" in hub \"{}\"",
+                            device_id, hub_name
+                        );
+                        let reconfigure = substatus.map_or_else(
+                            || ReprovisioningStatus::InitialAssignment,
+                            |s| ReprovisioningStatus::from(s.as_ref()),
+                        );
+                        ProvisioningResult {
+                            device_id,
+                            hub_name,
+                            reconfigure,
+                            sha256_thumbprint: None,
+                        }
+                    })
+                    .map_err(|err| Error::from(err.context(ErrorKind::Provision))),
+            ),
+            Err(err) => Either::B(future::err(Error::from(err.context(ErrorKind::Provision)))),
+        };
         Box::new(d)
     }
 }

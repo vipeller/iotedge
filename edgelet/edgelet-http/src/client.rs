@@ -19,6 +19,11 @@ use edgelet_utils::ensure_not_empty_with_context;
 
 use crate::error::{Error, ErrorKind};
 
+use native_tls::{Identity, TlsConnector};
+use openssl::pkcs12::Pkcs12;
+use openssl::pkey::PKey;
+use openssl::x509::X509;
+
 pub trait TokenSource {
     type Error;
     fn get(&self, expiry: &DateTime<Utc>) -> Result<String, Self::Error>;
@@ -62,6 +67,20 @@ pub struct Client<C, T> {
     api_version: String,
     host_name: Url,
     user_agent: Option<String>,
+    tls_connector: Option<TlsConnector>,
+}
+
+fn prepare_tls_connector(username: &str, cert_pem: &[u8], key_pem: &[u8]) -> Result<TlsConnector, Error> {
+    let key = PKey::private_key_from_pem(key_pem)?;
+    let cert = X509::from_pem(cert_pem)?;
+
+    let pkcs_cert = Pkcs12::builder().build("", username, &key, &cert)?;
+    let identity = Identity::from_pkcs12(&pkcs_cert.to_der()?, "")?;
+
+    let connector = TlsConnector::builder()
+                .identity(identity)
+                .build()?;
+    Ok(connector)
 }
 
 impl<C, T> Client<C, T>
@@ -86,9 +105,16 @@ where
             api_version,
             host_name,
             user_agent: None,
+            tls_connector: None
         };
 
         Ok(client)
+    }
+
+    pub fn use_identity_certificate(mut self, username: &str, cert_pem: &[u8], key_pem: &[u8]) -> Result<(), Error> {
+        let connector = prepare_tls_connector(username, cert_pem, key_pem)?;
+        self.tls_connector = Some(connector);
+        Ok(())
     }
 
     pub fn with_token_source(mut self, source: T) -> Self {
@@ -245,6 +271,7 @@ where
             api_version: self.api_version.clone(),
             host_name: self.host_name.clone(),
             user_agent: self.user_agent.clone(),
+            tls_connector: self.tls_connector.clone(),
         }
     }
 }

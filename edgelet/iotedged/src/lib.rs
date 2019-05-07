@@ -254,6 +254,7 @@ impl Main {
                     IOTEDGE_ID_CERT_MAX_DURATION_SECS,
                     IOTEDGE_SERVER_CERT_MAX_DURATION_SECS,
                 );
+                let x509: Option<&X509> = None;
                 while {
                     let code = start_api(
                         &settings,
@@ -264,6 +265,7 @@ impl Main {
                         root_key.clone(),
                         signal::shutdown(),
                         &crypto,
+                        x509,
                         &mut tokio_runtime,
                     )?;
                     code == StartApiReturnStatus::Restart
@@ -273,7 +275,7 @@ impl Main {
                 let dps_path = cache_subdir_path.join(EDGE_PROVISIONING_BACKUP_FILENAME);
 
                 macro_rules! start_edgelet {
-                    ($key_store:ident, $provisioning_result:ident, $root_key:ident, $runtime:ident, $x509:ident) => {{
+                    ($key_store:ident, $provisioning_result:ident, $root_key:ident, $runtime:ident) => {{
                         info!("Finished provisioning edge device.");
 
                         let cfg = WorkloadData::new(
@@ -282,6 +284,7 @@ impl Main {
                             IOTEDGE_ID_CERT_MAX_DURATION_SECS,
                             IOTEDGE_SERVER_CERT_MAX_DURATION_SECS,
                         );
+                        let x509: Option<&X509> = None;
                         while {
                             let code = start_api(
                                 &settings,
@@ -292,8 +295,8 @@ impl Main {
                                 $root_key.clone(),
                                 signal::shutdown(),
                                 &crypto,
+                                x509,
                                 &mut tokio_runtime,
-                                &$x509,
                             )?;
                             code == StartApiReturnStatus::Restart
                         } {}
@@ -313,7 +316,7 @@ impl Main {
                                 tpm,
                                 hsm_lock.clone(),
                             )?;
-                        start_edgelet!(key_store, provisioning_result, root_key, runtime, None);
+                        start_edgelet!(key_store, provisioning_result, root_key, runtime);
                     }
                     AttestationMethod::SymmetricKey(ref symmetric_key_info) => {
                         info!("Starting provisioning edge device via symmetric key...");
@@ -326,22 +329,22 @@ impl Main {
                                 &mut tokio_runtime,
                                 symmetric_key_info,
                             )?;
-                        start_edgelet!(key_store, provisioning_result, root_key, runtime, None);
+                        start_edgelet!(key_store, provisioning_result, root_key, runtime);
                     }
                     AttestationMethod::X509(ref x509_info) => {
                         let x509 = X509::new(hsm_lock.clone())
                             .context(ErrorKind::Initialize(InitializeErrorReason::Hsm))?;
-                        let (key_store, provisioning_result, root_key, runtime) =
+                        let (_key_store, _provisioning_result, _root_key, _runtime) =
                             dps_x509_provision(
                                 &x509,
+                                x509_info.clone(),
                                 &dps,
                                 hyper_client.clone(),
                                 dps_path,
                                 runtime,
                                 &mut tokio_runtime,
-                                x509_info.clone()
                             )?;
-                        start_edgelet!(key_store, provisioning_result, root_key, runtime, Some(x509_info));
+                        panic!("Not yet supported");
                     }
                 }
             }
@@ -717,12 +720,12 @@ fn manual_provision(
 
 fn dps_x509_provision<HC, M, X>(
     x509: &X,
+    x509_info: &X509AttestationInfo,
     provisioning: &Dps,
     hyper_client: HC,
     backup_path: PathBuf,
     runtime: M,
     tokio_runtime: &mut tokio::runtime::Runtime,
-    x509_info: &X509AttestationInfo,
 ) -> Result<(DerivedKeyStore<MemoryKey>, ProvisioningResult, MemoryKey, M), Error>
 where
     HC: 'static + ClientImpl,
@@ -733,17 +736,20 @@ where
         + Sync
         + 'static,
 {
-    let mut memory_hsm = MemoryKeyStore::new();
+    let memory_hsm = MemoryKeyStore::new();
 
-    let device_identity_cert = crypto.get().context(ErrorKind::Initialize(
+    let device_identity_cert = x509.get().context(ErrorKind::Initialize(
         InitializeErrorReason::DpsProvisioningClient,
     ))?;
 
-    let reg_id = match x509.registration_id() {
+    let common_name = device_identity_cert.get_common_name()
+                .context(ErrorKind::Initialize(
+                    InitializeErrorReason::DpsProvisioningClient,
+                ))?;
+
+    let reg_id = match x509_info.registration_id() {
         Some(id) => id.to_string(),
-        None => {
-            device_identity_cert.get_common_name()
-        }
+        None => common_name
     };
 
     let dps = DpsX509HybridProvisioning::new(
@@ -758,8 +764,43 @@ where
         InitializeErrorReason::DpsProvisioningClient,
     ))?;
 
-    panic!("Not yet implemented");
+    let provision_with_file_backup = BackupProvisioning::new(dps, backup_path);
 
+    let provision =
+        provision_with_file_backup
+            .provision(memory_hsm.clone())
+            .map_err(|err| {
+                Error::from(err.context(ErrorKind::Initialize(
+                    InitializeErrorReason::DpsProvisioningClient,
+                )))
+            })
+            .and_then(move |prov_result| {
+                info!("Successful DPS provisioning.");
+                if prov_result.reconfigure() == ReprovisioningStatus::DeviceDataNotUpdated {
+                    Either::B(future::ok((prov_result, runtime)))
+                } else {
+                    info!(
+                        "Reprovisioning status {:?} will trigger reconfiguration of modules.",
+                        prov_result.reconfigure()
+                    );
+
+                    let remove = runtime.remove_all().then(|result| {
+                        result.context(ErrorKind::Initialize(
+                            InitializeErrorReason::DpsProvisioningClient,
+                        ))?;
+                        Ok((prov_result, runtime))
+                    });
+                    Either::A(remove)
+                }
+            })
+            .and_then(move |(prov_result, runtime)| {
+                let k = memory_hsm.get(&KeyIdentity::Device, "primary").context(
+                    ErrorKind::Initialize(InitializeErrorReason::DpsProvisioningClient),
+                )?;
+                let derived_key_store = DerivedKeyStore::new(k.clone());
+                Ok((derived_key_store, prov_result, k, runtime))
+            });
+    tokio_runtime.block_on(provision)
 }
 
 fn dps_symmetric_key_provision<HC, M>(
