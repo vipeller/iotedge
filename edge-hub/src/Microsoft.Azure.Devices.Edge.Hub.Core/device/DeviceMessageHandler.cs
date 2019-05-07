@@ -337,6 +337,9 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Core.Device
         /// When the message feedback call comes back, ProcessMessageFeedback sets the TaskCompletionSource value, which results in the awaiting task to be completed.
         /// If no response comes back, then it times out.
         /// </summary>
+        /// <param name="message">message</param>
+        /// <param name="input">input</param>
+        /// <returns>task</returns>
         public async Task SendMessageAsync(IMessage message, string input)
         {
             // Locking here since multiple queues could be sending to the same module
@@ -369,6 +372,8 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Core.Device
         /// When the response comes back, SendMethodResponse sets the TaskCompletionSource value, which results in the awaiting task to be completed.
         /// If no response comes back, then it times out.
         /// </summary>
+        /// <param name="request">request</param>
+        /// <returns>direct method response</returns>
         public async Task<DirectMethodResponse> InvokeMethodAsync(DirectMethodRequest request)
         {
             var taskCompletion = new TaskCompletionSource<DirectMethodResponse>();
