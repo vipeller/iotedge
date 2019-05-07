@@ -111,10 +111,10 @@ where
         Ok(client)
     }
 
-    pub fn use_identity_certificate(mut self, username: &str, cert_pem: &[u8], key_pem: &[u8]) -> Result<(), Error> {
+    pub fn with_identity_certificate(mut self, username: &str, cert_pem: &[u8], key_pem: &[u8]) -> Result<Self, Error> {
         let connector = prepare_tls_connector(username, cert_pem, key_pem)?;
         self.tls_connector = Some(connector);
-        Ok(())
+        Ok(self)
     }
 
     pub fn with_token_source(mut self, source: T) -> Self {

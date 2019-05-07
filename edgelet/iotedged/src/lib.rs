@@ -185,9 +185,6 @@ impl Main {
             }
         }
 
-        let hyper_client = MaybeProxyClient::new(get_proxy_uri(None)?)
-            .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
-
         info!(
             "Using runtime network id {}",
             settings.moby_runtime().network()
@@ -245,6 +242,8 @@ impl Main {
         info!("Provisioning edge device...");
         match settings.provisioning() {
             Provisioning::Manual(manual) => {
+                let hyper_client = MaybeProxyClient::new(get_proxy_uri(None)?)
+                                    .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
                 let (key_store, provisioning_result, root_key) =
                     manual_provision(&manual, &mut tokio_runtime)?;
                 info!("Finished provisioning edge device.");
@@ -275,7 +274,7 @@ impl Main {
                 let dps_path = cache_subdir_path.join(EDGE_PROVISIONING_BACKUP_FILENAME);
 
                 macro_rules! start_edgelet {
-                    ($key_store:ident, $provisioning_result:ident, $root_key:ident, $runtime:ident) => {{
+                    ($hyper_client:ident, $key_store:ident, $provisioning_result:ident, $root_key:ident, $runtime:ident) => {{
                         info!("Finished provisioning edge device.");
 
                         let cfg = WorkloadData::new(
@@ -288,7 +287,7 @@ impl Main {
                         while {
                             let code = start_api(
                                 &settings,
-                                hyper_client.clone(),
+                                $hyper_client.clone(),
                                 &$runtime,
                                 &$key_store,
                                 cfg.clone(),
@@ -306,6 +305,8 @@ impl Main {
                 match dps.attestation() {
                     AttestationMethod::Tpm(ref tpm) => {
                         info!("Starting provisioning edge device via TPM...");
+                        let hyper_client = MaybeProxyClient::new(get_proxy_uri(None)?)
+                                            .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
                         let (key_store, provisioning_result, root_key, runtime) =
                             dps_tpm_provision(
                                 &dps,
@@ -316,10 +317,12 @@ impl Main {
                                 tpm,
                                 hsm_lock.clone(),
                             )?;
-                        start_edgelet!(key_store, provisioning_result, root_key, runtime);
+                        start_edgelet!(hyper_client, key_store, provisioning_result, root_key, runtime);
                     }
                     AttestationMethod::SymmetricKey(ref symmetric_key_info) => {
                         info!("Starting provisioning edge device via symmetric key...");
+                        let hyper_client = MaybeProxyClient::new(get_proxy_uri(None)?)
+                                            .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
                         let (key_store, provisioning_result, root_key, runtime) =
                             dps_symmetric_key_provision(
                                 &dps,
@@ -329,15 +332,32 @@ impl Main {
                                 &mut tokio_runtime,
                                 symmetric_key_info,
                             )?;
-                        start_edgelet!(key_store, provisioning_result, root_key, runtime);
+                        start_edgelet!(hyper_client, key_store, provisioning_result, root_key, runtime);
                     }
                     AttestationMethod::X509(ref x509_info) => {
+                        info!("Starting provisioning edge device via X509 provisioning...");
                         let x509 = X509::new(hsm_lock.clone())
                             .context(ErrorKind::Initialize(InitializeErrorReason::Hsm))?;
+
+                        let device_identity_cert = x509.get().context(ErrorKind::Initialize(
+                            InitializeErrorReason::DpsProvisioningClient,
+                        ))?;
+
+                        let common_name = device_identity_cert.get_common_name()
+                                    .context(ErrorKind::Initialize(
+                                        InitializeErrorReason::DpsProvisioningClient,
+                                    ))?;
+
+                        let reg_id = match x509_info.registration_id() {
+                            Some(id) => id.to_string(),
+                            None => common_name
+                        };
+
+                        let hyper_client = MaybeProxyClient::new(get_proxy_uri(None)?)
+                                            .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
                         let (_key_store, _provisioning_result, _root_key, _runtime) =
                             dps_x509_provision(
-                                &x509,
-                                x509_info.clone(),
+                                reg_id,
                                 &dps,
                                 hyper_client.clone(),
                                 dps_path,
@@ -719,8 +739,7 @@ fn manual_provision(
 }
 
 fn dps_x509_provision<HC, M, X>(
-    x509: &X,
-    x509_info: &X509AttestationInfo,
+    reg_id: String,
     provisioning: &Dps,
     hyper_client: HC,
     backup_path: PathBuf,
@@ -730,27 +749,8 @@ fn dps_x509_provision<HC, M, X>(
 where
     HC: 'static + ClientImpl,
     M: ModuleRuntime + Send + 'static,
-    X: GetDeviceIdentityCertificate
-        + Clone
-        + Send
-        + Sync
-        + 'static,
 {
     let memory_hsm = MemoryKeyStore::new();
-
-    let device_identity_cert = x509.get().context(ErrorKind::Initialize(
-        InitializeErrorReason::DpsProvisioningClient,
-    ))?;
-
-    let common_name = device_identity_cert.get_common_name()
-                .context(ErrorKind::Initialize(
-                    InitializeErrorReason::DpsProvisioningClient,
-                ))?;
-
-    let reg_id = match x509_info.registration_id() {
-        Some(id) => id.to_string(),
-        None => common_name
-    };
 
     let dps = DpsX509HybridProvisioning::new(
         hyper_client,
