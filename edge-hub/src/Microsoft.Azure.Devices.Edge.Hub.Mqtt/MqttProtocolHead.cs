@@ -122,6 +122,11 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Mqtt
             int threadCount = this.settingsProvider.GetIntegerSetting("ThreadCount", DefaultThreadCount);
             int listenBacklogSize = this.settingsProvider.GetIntegerSetting("ListenBacklogSize", DefaultListenBacklogSize);
             int parentEventLoopCount = this.settingsProvider.GetIntegerSetting("EventLoopCount", DefaultParentEventLoopCount);
+
+            int bufferAllocationMaxOrder = this.settingsProvider.GetIntegerSetting("io.netty.allocator.maxOrder", 4);
+            this.logger.LogInformation($"io.netty.allocator.maxOrder={bufferAllocationMaxOrder}");
+            Environment.SetEnvironmentVariable("io.netty.allocator.maxOrder", bufferAllocationMaxOrder.ToString());
+
             var settings = new Settings(this.settingsProvider);
 
             MessagingBridgeFactoryFunc bridgeFactory = this.mqttConnectionProvider.Connect;
