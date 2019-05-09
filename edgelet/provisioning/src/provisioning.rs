@@ -14,7 +14,7 @@ use serde_json;
 use url::Url;
 
 use dps::registration::{DpsAuthKind, DpsClient, DpsTokenSource};
-use edgelet_core::crypto::{Activate, KeyIdentity, KeyStore, MemoryKey, MemoryKeyStore, Certificate};
+use edgelet_core::crypto::{Activate, KeyIdentity, KeyStore, MemoryKey, MemoryKeyStore};
 use edgelet_hsm::tpm::{TpmKey, TpmKeyStore};
 use edgelet_http::client::{Client as HttpClient, ClientImpl};
 use edgelet_utils::log_failure;
@@ -307,22 +307,19 @@ where
 }
 
 #[allow(dead_code)]
-pub struct DpsX509HybridProvisioning<C, I>
+pub struct DpsX509HybridProvisioning<C>
 where
-    C: ClientImpl,
-    I: Certificate
+    C: ClientImpl
 {
     client: HttpClient<C, DpsTokenSource<MemoryKey>>,
     scope_id: String,
     registration_id: String,
-    identity_cert: I
 }
 
 
-impl<C, I> DpsX509HybridProvisioning<C, I>
+impl<C> DpsX509HybridProvisioning<C>
 where
     C: ClientImpl,
-    I: Certificate
 {
     pub fn new(
         client_impl: C,
@@ -330,7 +327,6 @@ where
         scope_id: String,
         registration_id: String,
         api_version: String,
-        identity_cert: I
     ) -> Result<Self, Error> {
         let client = HttpClient::new(
             client_impl,
@@ -343,16 +339,14 @@ where
             client,
             scope_id,
             registration_id,
-            identity_cert,
         };
         Ok(result)
     }
 }
 
-impl<C, I> Provision for DpsX509HybridProvisioning<C, I>
+impl<C> Provision for DpsX509HybridProvisioning<C>
 where
     C: 'static + ClientImpl,
-    I: Certificate
 {
     type Hsm = MemoryKeyStore;
 

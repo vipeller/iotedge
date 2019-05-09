@@ -26,11 +26,11 @@ pub struct Config {
     identity_certificate: Option<PemCertificate>,
 }
 
-fn prepare_tls_connector(username: &str, cert_pem: &[u8], key_pem: &[u8]) -> Result<TlsConnector, Error> {
+fn prepare_tls_connector(username: &str, password: &str, cert_pem: &[u8], key_pem: &[u8]) -> Result<TlsConnector, Error> {
     let key = PKey::private_key_from_pem(key_pem)?;
     let cert = X509::from_pem(cert_pem)?;
 
-    let pkcs_cert = Pkcs12::builder().build("", username, &key, &cert)?;
+    let pkcs_cert = Pkcs12::builder().build(password, username, &key, &cert)?;
     let identity = Identity::from_pkcs12(&pkcs_cert.to_der()?, "")?;
 
     let connector = TlsConnector::builder()
@@ -61,7 +61,10 @@ impl Config {
         } else {
             let https_connector = match &self.identity_certificate {
                 Some(id) => {
-                    let connector = prepare_tls_connector(id.username.as_str(), id.cert.as_slice(), id.key.as_slice())?;
+                    let connector = prepare_tls_connector(id.username.as_ref().map_or("", String::as_str),
+                                                          id.password.as_ref().map_or("", String::as_str),
+                                                          id.cert.as_slice(),
+                                                          id.key.as_slice())?;
 
                     let mut http = HttpConnector::new(DNS_WORKER_THREADS);
                     http.enforce_http(false);

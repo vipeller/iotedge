@@ -43,7 +43,7 @@ use docker::models::HostConfig;
 use dps::DPS_API_VERSION;
 use edgelet_config::{
     AttestationMethod, Dps, Manual, Provisioning, Settings, SymmetricKeyAttestationInfo,
-    TpmAttestationInfo, DEFAULT_CONNECTION_STRING, X509AttestationInfo
+    TpmAttestationInfo, DEFAULT_CONNECTION_STRING
 };
 use edgelet_core::crypto::{
     Activate, CreateCertificate, Decrypt, DerivedKeyStore, Encrypt, GetIssuerAlias, GetTrustBundle,
@@ -53,7 +53,7 @@ use edgelet_core::crypto::{
 use edgelet_core::watchdog::Watchdog;
 use edgelet_core::{
     Certificate, CertificateIssuer, CertificateProperties, CertificateType, ModuleRuntime,
-    ModuleSpec, UrlExt, WorkloadConfig, UNIX_SCHEME
+    ModuleSpec, UrlExt, WorkloadConfig, UNIX_SCHEME,KeyBytes, PrivateKey
 };
 use edgelet_docker::{DockerConfig, DockerModuleRuntime};
 use edgelet_hsm::tpm::{TpmKey, TpmKeyStore};
@@ -61,7 +61,7 @@ use edgelet_hsm::{Crypto, X509, HsmLock};
 use edgelet_http::certificate_manager::CertificateManager;
 use edgelet_http::client::{Client as HttpClient, ClientImpl};
 use edgelet_http::logging::LoggingService;
-use edgelet_http::{HyperExt, MaybeProxyClient, API_VERSION};
+use edgelet_http::{HyperExt, MaybeProxyClient, API_VERSION, PemCertificate};
 use edgelet_http_mgmt::ManagementService;
 use edgelet_http_workload::WorkloadService;
 use edgelet_iothub::{HubIdentityManager, SasTokenSource};
@@ -146,6 +146,11 @@ const EDGE_SETTINGS_STATE_FILENAME: &str = "settings_state";
 /// This is the name of the cache subdirectory for settings state
 const EDGE_SETTINGS_SUBDIR: &str = "cache";
 
+const DPS_REGISTRATION_ID_ENV_KEY: &str = "IOTEDGE_REGISTRATION_ID";
+const DPS_DEVICE_ID_CERT_ENV_KEY: &str = "IOTEDGE_DEVICE_IDENTITY_CERT";
+const DPS_DEVICE_ID_KEY_ENV_KEY: &str = "IOTEDGE_DEVICE_IDENTITY_PK";
+const DPS_DEVICE_ID_ENV_KEY: &str = "IOTEDGE_DEVICE_ID";
+
 /// These are the properties of the workload CA certificate
 const IOTEDGED_VALIDITY: u64 = 7_776_000; // 90 days
 const IOTEDGED_COMMONNAME: &str = "iotedged workload ca";
@@ -221,7 +226,43 @@ impl Main {
                 env::set_var(TRUSTED_CA_CERTS_KEY, path);
             }
         };
-        info!("Finished configuring certificates.");
+
+        if let Provisioning::Dps(dps) = settings.provisioning() {
+            match dps.attestation() {
+                AttestationMethod::Tpm(ref tpm) => {
+                    env::set_var(DPS_REGISTRATION_ID_ENV_KEY, tpm.registration_id().to_string());
+
+                    if let Some(val) = tpm.device_id() {
+                        env::set_var(DPS_DEVICE_ID_ENV_KEY, val.to_string());
+                    }
+                },
+                AttestationMethod::SymmetricKey(ref symmetric_key_info) => {
+                    env::set_var(DPS_REGISTRATION_ID_ENV_KEY, symmetric_key_info.registration_id().to_string());
+
+                    if let Some(val) = symmetric_key_info.device_id() {
+                        env::set_var(DPS_DEVICE_ID_ENV_KEY, val.to_string());
+                    }
+                },
+                AttestationMethod::X509(ref x509_info) => {
+                    if let Some(val) = x509_info.registration_id() {
+                        env::set_var(DPS_REGISTRATION_ID_ENV_KEY, val.to_string());
+                    }
+
+                    if let Some(val) = x509_info.device_id() {
+                        env::set_var(DPS_DEVICE_ID_ENV_KEY, val.to_string());
+                    }
+
+                    if let Some(val) = x509_info.identity_cert() {
+                        env::set_var(DPS_DEVICE_ID_CERT_ENV_KEY, val);
+                    }
+
+                    if let Some(val) = x509_info.identity_pk() {
+                        env::set_var(DPS_DEVICE_ID_KEY_ENV_KEY, val);
+                    }
+                }
+            }
+        }
+        info!("Finished configuring provisioning environment variables and certificates.");
 
         info!("Initializing hsm...");
         let crypto = Crypto::new(hsm_lock.clone())
@@ -336,6 +377,7 @@ impl Main {
                     }
                     AttestationMethod::X509(ref x509_info) => {
                         info!("Starting provisioning edge device via X509 provisioning...");
+
                         let x509 = X509::new(hsm_lock.clone())
                             .context(ErrorKind::Initialize(InitializeErrorReason::Hsm))?;
 
@@ -349,11 +391,13 @@ impl Main {
                                     ))?;
 
                         let reg_id = match x509_info.registration_id() {
-                            Some(id) => id.to_string(),
-                            None => common_name
+                            Some(id) => { id.to_string() },
+                            None => {common_name},
                         };
 
-                        let hyper_client = MaybeProxyClient::new(get_proxy_uri(None)?)
+                        let pem = cert_to_pem_cert(&device_identity_cert, None, None)
+                                    .context(ErrorKind::Initialize(InitializeErrorReason::Hsm))?;
+                        let hyper_client = MaybeProxyClient::new_with_identity_cert(get_proxy_uri(None)?, pem)
                                             .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
                         let (_key_store, _provisioning_result, _root_key, _runtime) =
                             dps_x509_provision(
@@ -373,6 +417,30 @@ impl Main {
         info!("Shutdown complete.");
         Ok(())
     }
+}
+
+// todo relocate this to where PemCertificate lives
+fn cert_to_pem_cert<T: Certificate>(id_cert: &T,
+                                    username: Option<String>,
+                                    password: Option<String>) -> Result<PemCertificate, Error> {
+    let cert = match id_cert.pem() {
+        Ok(cert_buffer) => cert_buffer.as_ref().to_owned(),
+        _ => return Err(Error::from(ErrorKind::Initialize(InitializeErrorReason::InvalidDeviceCertCredentials))),
+    };
+
+    let key = match id_cert.get_private_key() {
+        Ok(Some(PrivateKey::Ref(ref_))) => {
+            ref_.into_bytes().clone()
+        },
+
+        Ok(Some(PrivateKey::Key(KeyBytes::Pem(buffer)))) => {
+            buffer.as_ref().to_vec()
+        },
+
+        _ => return Err(Error::from(ErrorKind::Initialize(InitializeErrorReason::InvalidDeviceCertCredentials))),
+    };
+
+    Ok(PemCertificate::new(cert, key, username, password))
 }
 
 pub fn get_proxy_uri(https_proxy: Option<String>) -> Result<Option<Uri>, Error> {
@@ -738,7 +806,7 @@ fn manual_provision(
     tokio_runtime.block_on(provision)
 }
 
-fn dps_x509_provision<HC, M, X>(
+fn dps_x509_provision<HC, M>(
     reg_id: String,
     provisioning: &Dps,
     hyper_client: HC,
@@ -758,7 +826,6 @@ where
         provisioning.scope_id().to_string(),
         reg_id,
         DPS_API_VERSION.to_string(),
-        device_identity_cert
     )
     .context(ErrorKind::Initialize(
         InitializeErrorReason::DpsProvisioningClient,

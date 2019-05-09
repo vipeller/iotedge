@@ -90,6 +90,7 @@ pub enum InitializeErrorReason {
     EdgeRuntime,
     Hsm,
     HttpClient,
+    InvalidDeviceCertCredentials,
     InvalidProxyUri,
     InvalidSocketUri,
     IssuerCAExpiration,
@@ -143,6 +144,8 @@ impl fmt::Display for InitializeErrorReason {
             InitializeErrorReason::Hsm => write!(f, "Could not initialize HSM"),
 
             InitializeErrorReason::HttpClient => write!(f, "Could not initialize HTTP client"),
+
+            InitializeErrorReason::InvalidDeviceCertCredentials => write!(f, "Invalid identity certificate"),
 
             InitializeErrorReason::InvalidProxyUri => write!(f, "Invalid proxy URI"),
 
