@@ -358,7 +358,7 @@ where
             self.client.clone(),
             self.scope_id.clone(),
             self.registration_id.clone(),
-            DpsAuthKind::SymmetricKey,
+            DpsAuthKind::X509,
             key_activator,
         );
 

@@ -92,6 +92,7 @@ where
 pub enum DpsAuthKind {
     Tpm { ek: Bytes, srk: Bytes },
     SymmetricKey,
+    X509,
 }
 
 pub struct DpsClient<C, K, A>
@@ -292,6 +293,34 @@ where
         Box::new(chain)
     }
 
+    fn register_with_x509_auth(
+        client: &Arc<RwLock<Client<C, DpsTokenSource<K>>>>,
+        scope_id: String,
+        registration_id: String,
+    ) -> Box<dyn Future<Item = Option<RegistrationOperationStatus>, Error = Error> + Send> {
+        let cli = client.clone();
+        let registration = DeviceRegistration::new().with_registration_id(registration_id.clone());
+        let cli = cli.read().expect("RwLock read failure").clone();
+        let f = cli.request::<DeviceRegistration, RegistrationOperationStatus>(
+                Method::PUT,
+                &format!("{}/registrations/{}/register", scope_id, registration_id),
+                None,
+                Some(registration.clone()),
+                false,
+            )
+            .map_err(|err| {
+                Error::from(err.context(ErrorKind::RegisterWithX509IdentityCertificate))
+            })
+            .map(
+                move |operation_status: Option<RegistrationOperationStatus>| {
+                    debug!("{:?}", operation_status);
+                    operation_status
+                },
+            )
+            .into_future();
+        Box::new(f)
+    }
+
     fn register_with_symmetric_key_auth(
         client: &Arc<RwLock<Client<C, DpsTokenSource<K>>>>,
         scope_id: String,
@@ -436,13 +465,18 @@ where
                     &srk,
                     &self.key_store,
                 )
-            }
+            },
             DpsAuthKind::SymmetricKey => Self::register_with_symmetric_key_auth(
                 &self.client,
                 scope_id,
                 registration_id,
                 &self.key_store,
             ),
+            DpsAuthKind::X509 => Self::register_with_x509_auth(
+                &self.client,
+                scope_id,
+                registration_id,
+            )
         }
         .and_then(
             move |operation_status: Option<RegistrationOperationStatus>| match key_store

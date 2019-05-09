@@ -49,6 +49,9 @@ pub enum ErrorKind {
 
     #[fail(display = "Symmetric key registration failed")]
     RegisterWithSymmetricChallengeKey,
+
+    #[fail(display = "X509 certificate registration failed")]
+    RegisterWithX509IdentityCertificate,
 }
 
 impl Fail for Error {
