@@ -818,7 +818,13 @@ where
     HC: 'static + ClientImpl,
     M: ModuleRuntime + Send + 'static,
 {
-    let memory_hsm = MemoryKeyStore::new();
+    let mut memory_hsm = MemoryKeyStore::new();
+
+    let key_bytes: [u8; 32] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2 ];
+
+    memory_hsm
+        .activate_identity_key(KeyIdentity::Device, "primary".to_string(), key_bytes)
+        .context(ErrorKind::ActivateSymmetricKey)?;
 
     let dps = DpsX509HybridProvisioning::new(
         hyper_client,

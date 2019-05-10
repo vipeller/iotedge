@@ -161,20 +161,25 @@ where
         scope_id: &str,
         registration_id: &str,
         registration: &DeviceRegistration,
-        key: K,
+        token_source: Option<DpsTokenSource<K>>,
     ) -> Box<dyn Future<Item = Option<RegistrationOperationStatus>, Error = Error> + Send> {
-        let token_source =
-            DpsTokenSource::new(scope_id.to_string(), registration_id.to_string(), key);
         debug!(
             "Registration PUT, scope_id, \"{}\", registration_id \"{}\"",
             scope_id, registration_id
         );
-        let f = client
+        let c = if let Some(ts) = token_source {
+            client
             .write()
             .expect("RwLock write failure")
             .clone()
-            .with_token_source(token_source)
-            .request::<DeviceRegistration, RegistrationOperationStatus>(
+            .with_token_source(ts)
+        } else {
+            client
+            .write()
+            .expect("RwLock write failure")
+            .clone()
+        };
+        let f = c.request::<DeviceRegistration, RegistrationOperationStatus>(
                 Method::PUT,
                 &format!("{}/registrations/{}/register", scope_id, registration_id),
                 None,
@@ -190,14 +195,21 @@ where
         scope_id: &str,
         registration_id: &str,
         operation_id: &str,
-        key: K,
+        token_source: Option<DpsTokenSource<K>>,
     ) -> Box<dyn Future<Item = Option<DeviceRegistrationResult>, Error = Error> + Send> {
-        let token_source =
-            DpsTokenSource::new(scope_id.to_string(), registration_id.to_string(), key);
-        let request = client.read().expect("RwLock read failure")
+        let c = if let Some(ts) = token_source {
+            client
+            .read()
+            .expect("RwLock read failure")
             .clone()
-            .with_token_source(token_source)
-            .request::<(), RegistrationOperationStatus>(
+            .with_token_source(ts)
+        } else {
+            client
+            .read()
+            .expect("RwLock read failure")
+            .clone()
+        };
+        let request = c.request::<(), RegistrationOperationStatus>(
                 Method::GET,
                 &format!(
                     "{}/registrations/{}/operations/{}",
@@ -257,7 +269,7 @@ where
         scope_id: String,
         registration_id: String,
         operation_id: String,
-        key: K,
+        token_source: Option<DpsTokenSource<K>>,
         retry_count: u64,
     ) -> Box<dyn Future<Item = Option<DeviceRegistrationResult>, Error = Error> + Send> {
         debug!(
@@ -277,7 +289,7 @@ where
                 &scope_id,
                 &registration_id,
                 &operation_id,
-                key.clone(),
+                token_source.clone(),
             )
         })
         .skip_while(Self::is_skippable_result)
@@ -422,13 +434,16 @@ where
                                 body.as_str(),
                                 &mut key_store_inner,
                             ) {
-                                Ok(key) => Either::A(Self::get_operation_id(
-                                    &client_inner.clone(),
-                                    scope_id.as_str(),
-                                    registration_id.as_str(),
-                                    &registration,
-                                    key.clone(),
-                                )),
+                                Ok(key) => {
+                                    let token_source = DpsTokenSource::new(scope_id.to_string(), registration_id.to_string(), key);
+                                        Either::A(Self::get_operation_id(
+                                        &client_inner.clone(),
+                                        scope_id.as_str(),
+                                        registration_id.as_str(),
+                                        &registration,
+                                        Some(token_source),
+                                    ))
+                                },
                                 Err(err) => Either::B(future::err(err)),
                             },
                         )
@@ -454,13 +469,14 @@ where
         );
 
         let mut use_tpm_auth = false;
+        let mut use_x509_auth = false;
         let r = match &self.auth {
             DpsAuthKind::Tpm { ek, srk } => {
                 use_tpm_auth = true;
                 Self::register_with_tpm_auth(
                     &self.client,
-                    scope_id,
-                    registration_id,
+                    scope_id.clone(),
+                    registration_id.clone(),
                     &ek,
                     &srk,
                     &self.key_store,
@@ -468,43 +484,61 @@ where
             },
             DpsAuthKind::SymmetricKey => Self::register_with_symmetric_key_auth(
                 &self.client,
-                scope_id,
-                registration_id,
+                scope_id.clone(),
+                registration_id.clone(),
                 &self.key_store,
             ),
-            DpsAuthKind::X509 => Self::register_with_x509_auth(
-                &self.client,
-                scope_id,
-                registration_id,
-            )
+            DpsAuthKind::X509 => {
+                use_x509_auth = true;
+                Self::register_with_x509_auth(
+                    &self.client,
+                    scope_id.clone(),
+                    registration_id.clone(),
+                )
+            }
         }
-        .and_then(
-            move |operation_status: Option<RegistrationOperationStatus>| match key_store
-                .get(&KeyIdentity::Device, "primary")
-            {
-                Ok(k) => operation_status.map_or_else(
+        .and_then(move |operation_status: Option<RegistrationOperationStatus>|
+                operation_status.map_or_else(
                     || {
                         Either::B(future::err(Error::from(
                             ErrorKind::RegisterWithAuthUnexpectedlyFailedOperationNotAssigned,
                         )))
                     },
-                    move |s| {
+                    move |s|
+                    {
                         let retry_count =
                             (DPS_ASSIGNMENT_TIMEOUT_SECS / DPS_ASSIGNMENT_RETRY_INTERVAL_SECS) + 1;
-                        Either::A(Self::get_device_registration_result(
-                            client_with_token_status,
-                            scope_id_status,
-                            registration_id_status,
-                            s.operation_id().clone(),
-                            k.clone(),
-                            retry_count,
-                        ))
+                        let token_key: Result<Option<K>, ()> =
+                        if use_x509_auth {
+                            Ok(None)
+                        } else {
+                            match key_store.get(&KeyIdentity::Device, "primary") {
+                                Ok(id_key) => Ok(Some(id_key.clone())),
+                                Err(_err) => Err(()),
+                            }
+                        };
+                        match token_key {
+                            Ok(tk) => {
+                                let ts = if let Some(k) = tk {
+                                    Some(DpsTokenSource::new(scope_id.to_string(), registration_id.clone().to_string(), k))
+                                } else {
+                                    None
+                                };
+                                Either::A(Self::get_device_registration_result(
+                                    client_with_token_status,
+                                    scope_id_status,
+                                    registration_id_status,
+                                    s.operation_id().clone(),
+                                    ts,
+                                    retry_count,
+                                ))
+                            },
+                            Err(_err) => {
+                                Either::B(future::err(Error::from(ErrorKind::RegisterWithAuthUnexpectedlyFailedOperationNotAssigned)))
+                            }
+                        }
                     },
                 ),
-                Err(err) => Either::B(future::err(Error::from(
-                    err.context(ErrorKind::RegisterWithAuthUnexpectedlyFailed),
-                ))),
-            },
         )
         .and_then(move |operation_status: Option<DeviceRegistrationResult>| {
             let s = operation_status.ok_or_else(|| {

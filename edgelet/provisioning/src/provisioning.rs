@@ -54,7 +54,7 @@ impl Default for ReprovisioningStatus {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ProvisioningResult {
     device_id: String,
     hub_name: String,
@@ -418,6 +418,7 @@ where
     }
 
     fn restore(path: PathBuf) -> Result<ProvisioningResult, Error> {
+        info!("Restore Path {:?}", path);
         let mut file = File::open(path).context(ErrorKind::CouldNotRestore)?;
         let mut buffer = String::new();
         let _ = file
@@ -482,6 +483,7 @@ where
             self.underlying
                 .provision(key_activator)
                 .and_then(move |mut prov_result| {
+                    debug!("Provisioning result {:?}", prov_result);
                     let reconfigure = match prov_result.reconfigure {
                         ReprovisioningStatus::DeviceDataUpdated => {
                             if Self::diff_with_backup(restore_path, &prov_result) {

@@ -12,6 +12,7 @@ use url::Url;
 use openssl::pkcs12::Pkcs12;
 use openssl::pkey::PKey;
 use openssl::x509::X509;
+use openssl::stack::Stack;
 
 use super::super::PemCertificate;
 use super::super::client::ClientImpl;
@@ -27,15 +28,40 @@ pub struct Config {
 }
 
 fn prepare_tls_connector(username: &str, password: &str, cert_pem: &[u8], key_pem: &[u8]) -> Result<TlsConnector, Error> {
-    let key = PKey::private_key_from_pem(key_pem)?;
-    let cert = X509::from_pem(cert_pem)?;
+    let mut certs =
+        X509::stack_from_pem(cert_pem).with_context(|_| ErrorKind::CertificateConversionError)?;
 
-    let pkcs_cert = Pkcs12::builder().build(password, username, &key, &cert)?;
-    let identity = Identity::from_pkcs12(&pkcs_cert.to_der()?, "")?;
+    // the first cert is the identity cert and the other certs are part of the CA
+    // chain; we skip the server cert and build an OpenSSL cert stack with the
+    // other certs
+    let mut ca_certs = Stack::new().with_context(|_| ErrorKind::CertificateConversionError)?;
+    for cert in certs.split_off(1) {
+        ca_certs
+            .push(cert)
+            .with_context(|_| ErrorKind::CertificateConversionError)?;
+    }
+
+    let key = PKey::private_key_from_pem(key_pem)
+                .with_context(|_| ErrorKind::CertificateConversionError)?;
+
+    let identity_cert = &certs[0];
+
+    let mut builder = Pkcs12::builder();
+    builder.ca(ca_certs);
+    let pkcs_certs = builder
+        .build(password, username, &key, &identity_cert)
+        .with_context(|_| ErrorKind::CertificateConversionError)?;
+
+    let der = pkcs_certs.to_der()
+        .with_context(|_| ErrorKind::CertificateConversionError)?;
+
+    let identity = Identity::from_pkcs12(&der, "")?;
 
     let connector = TlsConnector::builder()
                 .identity(identity)
-                .build()?;
+                .build()
+                .with_context(|_| ErrorKind::CertificateConversionError)?;
+
     Ok(connector)
 }
 
