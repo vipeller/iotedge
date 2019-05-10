@@ -73,6 +73,10 @@ impl ProvisioningResult {
         &self.hub_name
     }
 
+    pub fn sha256_thumbprint(&self) -> Option<&str> {
+        self.sha256_thumbprint.as_ref().map(AsRef::as_ref)
+    }
+
     pub fn reconfigure(&self) -> ReprovisioningStatus {
         self.reconfigure
     }
