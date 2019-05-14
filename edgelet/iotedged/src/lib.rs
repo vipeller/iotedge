@@ -284,6 +284,29 @@ impl Main {
         info!("Initializing hsm...");
         let crypto = Crypto::new(hsm_lock.clone())
             .context(ErrorKind::Initialize(InitializeErrorReason::Hsm))?;
+
+        let (hyper_client, device_identity_cert) =
+            if get_provisioning_auth_method(&settings) == ProvisioningAuthMethod::X509 {
+            let hyper_client = MaybeProxyClient::new(get_proxy_uri(None)?)
+                                .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
+
+            let x509 = X509::new(hsm_lock.clone())
+                .context(ErrorKind::Initialize(InitializeErrorReason::Hsm))?;
+
+            let device_identity_cert = x509.get().context(ErrorKind::Initialize(
+                InitializeErrorReason::DpsProvisioningClient,
+            ))?;
+
+            (hyper_client, Some(device_identity_cert))
+        }
+        else
+        {
+            let hyper_client = MaybeProxyClient::new(get_proxy_uri(None)?)
+                                .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
+
+            (hyper_client, None)
+        };
+
         info!("Finished initializing hsm.");
 
         // Detect if the settings were changed and if the device needs to be reconfigured
@@ -301,8 +324,6 @@ impl Main {
         info!("Provisioning edge device...");
         match settings.provisioning() {
             Provisioning::Manual(manual) => {
-                let hyper_client = MaybeProxyClient::new(get_proxy_uri(None)?)
-                                    .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
                 let (key_store, provisioning_result, root_key) =
                     manual_provision(&manual, &mut tokio_runtime)?;
                 info!("Finished provisioning edge device.");
@@ -312,7 +333,6 @@ impl Main {
                     IOTEDGE_ID_CERT_MAX_DURATION_SECS,
                     IOTEDGE_SERVER_CERT_MAX_DURATION_SECS,
                 );
-                let x509: Option<&X509> = None;
                 while {
                     let code = start_api(
                         &settings,
@@ -323,7 +343,6 @@ impl Main {
                         root_key.clone(),
                         signal::shutdown(),
                         &crypto,
-                        x509,
                         &mut tokio_runtime,
                     )?;
                     code == StartApiReturnStatus::Restart
@@ -342,7 +361,6 @@ impl Main {
                             IOTEDGE_ID_CERT_MAX_DURATION_SECS,
                             IOTEDGE_SERVER_CERT_MAX_DURATION_SECS,
                         );
-                        let x509: Option<&X509> = None;
                         while {
                             let code = start_api(
                                 &settings,
@@ -353,7 +371,6 @@ impl Main {
                                 $root_key.clone(),
                                 signal::shutdown(),
                                 &crypto,
-                                x509,
                                 &mut tokio_runtime,
                             )?;
                             code == StartApiReturnStatus::Restart
@@ -364,8 +381,6 @@ impl Main {
                 match dps.attestation() {
                     AttestationMethod::Tpm(ref tpm) => {
                         info!("Starting provisioning edge device via TPM...");
-                        let hyper_client = MaybeProxyClient::new(get_proxy_uri(None)?)
-                                            .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
                         let (key_store, provisioning_result, root_key, runtime) =
                             dps_tpm_provision(
                                 &dps,
@@ -380,8 +395,6 @@ impl Main {
                     }
                     AttestationMethod::SymmetricKey(ref symmetric_key_info) => {
                         info!("Starting provisioning edge device via symmetric key...");
-                        let hyper_client = MaybeProxyClient::new(get_proxy_uri(None)?)
-                                            .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
                         let (key_store, provisioning_result, root_key, runtime) =
                             dps_symmetric_key_provision(
                                 &dps,
@@ -396,14 +409,10 @@ impl Main {
                     AttestationMethod::X509(ref x509_info) => {
                         info!("Starting provisioning edge device via X509 provisioning...");
 
-                        let x509 = X509::new(hsm_lock.clone())
-                            .context(ErrorKind::Initialize(InitializeErrorReason::Hsm))?;
+                        let dc = device_identity_cert
+                                    .ok_or_else(|| ErrorKind::Initialize(InitializeErrorReason::DpsProvisioningClient))?;
 
-                        let device_identity_cert = x509.get().context(ErrorKind::Initialize(
-                            InitializeErrorReason::DpsProvisioningClient,
-                        ))?;
-
-                        let common_name = device_identity_cert.get_common_name()
+                        let common_name = dc.get_common_name()
                                     .context(ErrorKind::Initialize(
                                         InitializeErrorReason::DpsProvisioningClient,
                                     ))?;
@@ -413,19 +422,13 @@ impl Main {
                             None => {common_name},
                         };
 
-                        let pem = cert_to_pem_cert(&device_identity_cert, None, None)
+                        let pem = cert_to_pem_cert(&dc, None, None)
                                     .context(ErrorKind::Initialize(InitializeErrorReason::Hsm))?;
                         let hyper_client = MaybeProxyClient::new_with_identity_cert(get_proxy_uri(None)?, pem)
                                             .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
 
-                        // todo remove unwrap
-                        let key_bytes = hybrid_identity_key.unwrap();
-
-                        // let key_bytes = hybrid_identity_key.ok_or_else(|| {
-                        //     Err(Error::from(ErrorKind::Initialize(
-                        //         InitializeErrorReason::DpsProvisioningClient,
-                        //     )))
-                        // })?;
+                        let key_bytes = hybrid_identity_key
+                                        .ok_or_else(|| ErrorKind::Initialize(InitializeErrorReason::DpsProvisioningClient))?;
 
                         let (key_store, provisioning_result, root_key, runtime) =
                             dps_x509_provision(
@@ -742,7 +745,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn start_api<HC, K, F, C, W, X>(
+fn start_api<HC, K, F, C, W>(
     settings: &Settings<DockerConfig>,
     hyper_client: HC,
     runtime: &DockerModuleRuntime,
@@ -751,7 +754,6 @@ fn start_api<HC, K, F, C, W, X>(
     root_key: K,
     shutdown_signal: F,
     crypto: &C,
-    _x509: Option<&X>,
     tokio_runtime: &mut tokio::runtime::Runtime,
 ) -> Result<StartApiReturnStatus, Error>
 where
@@ -763,11 +765,6 @@ where
         + Encrypt
         + GetTrustBundle
         + MasterEncryptionKey
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    X: GetDeviceIdentityCertificate
         + Clone
         + Send
         + Sync
