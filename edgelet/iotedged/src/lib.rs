@@ -269,13 +269,8 @@ impl Main {
                         env::set_var(DPS_DEVICE_ID_ENV_KEY, val.to_string());
                     }
 
-                    if let Some(val) = x509_info.identity_cert() {
-                        env::set_var(DPS_DEVICE_ID_CERT_ENV_KEY, val);
-                    }
-
-                    if let Some(val) = x509_info.identity_pk() {
-                        env::set_var(DPS_DEVICE_ID_KEY_ENV_KEY, val);
-                    }
+                    env::set_var(DPS_DEVICE_ID_CERT_ENV_KEY, x509_info.identity_cert());
+                    env::set_var(DPS_DEVICE_ID_KEY_ENV_KEY, x509_info.identity_pk());
                 }
             }
         }
@@ -285,7 +280,7 @@ impl Main {
         let crypto = Crypto::new(hsm_lock.clone())
             .context(ErrorKind::Initialize(InitializeErrorReason::Hsm))?;
 
-        let (hyper_client, device_identity_cert) =
+        let (hyper_client, device_identity_cert, cert_thumbprint) =
             if get_provisioning_auth_method(&settings) == ProvisioningAuthMethod::X509 {
             let hyper_client = MaybeProxyClient::new(get_proxy_uri(None)?)
                                 .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
@@ -297,14 +292,18 @@ impl Main {
                 InitializeErrorReason::DpsProvisioningClient,
             ))?;
 
-            (hyper_client, Some(device_identity_cert))
+            let cert_thumbprint = get_thumbprint(&device_identity_cert).context(ErrorKind::Initialize(
+                            InitializeErrorReason::DpsProvisioningClient,
+                        ))?;
+
+            (hyper_client, Some(device_identity_cert), Some(cert_thumbprint))
         }
         else
         {
             let hyper_client = MaybeProxyClient::new(get_proxy_uri(None)?)
                                 .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
 
-            (hyper_client, None)
+            (hyper_client, None, None)
         };
 
         info!("Finished initializing hsm.");
@@ -410,7 +409,7 @@ impl Main {
                         info!("Starting provisioning edge device via X509 provisioning...");
 
                         let dc = device_identity_cert
-                                    .ok_or_else(|| ErrorKind::Initialize(InitializeErrorReason::DpsProvisioningClient))?;
+                            .ok_or_else(|| ErrorKind::Initialize(InitializeErrorReason::DpsProvisioningClient))?;
 
                         let common_name = dc.get_common_name()
                                     .context(ErrorKind::Initialize(
@@ -430,6 +429,9 @@ impl Main {
                         let key_bytes = hybrid_identity_key
                                         .ok_or_else(|| ErrorKind::Initialize(InitializeErrorReason::DpsProvisioningClient))?;
 
+                        let thumbprint = cert_thumbprint
+                            .ok_or_else(|| ErrorKind::Initialize(InitializeErrorReason::DpsProvisioningClient))?;
+
                         let (key_store, provisioning_result, root_key, runtime) =
                             dps_x509_provision(
                                 reg_id,
@@ -439,6 +441,7 @@ impl Main {
                                 runtime,
                                 &mut tokio_runtime,
                                 &key_bytes,
+                                thumbprint,
                             )?;
                         start_edgelet!(hyper_client, key_store, provisioning_result, root_key, runtime);
                     }
@@ -449,6 +452,11 @@ impl Main {
         info!("Shutdown complete.");
         Ok(())
     }
+}
+
+fn get_thumbprint<T: Certificate>(id_cert: &T) -> Result<String, Error> {
+    let cert_pem = id_cert.pem().context(ErrorKind::Initialize(InitializeErrorReason::Hsm))?;
+    Ok(format!("{:x}", Sha256::digest(cert_pem.as_bytes())))
 }
 
 // todo relocate this to where PemCertificate lives
@@ -921,6 +929,7 @@ fn dps_x509_provision<HC, M>(
     runtime: M,
     tokio_runtime: &mut tokio::runtime::Runtime,
     hybrid_identity_key: &[u8],
+    cert_thumbprint: String,
 ) -> Result<(DerivedKeyStore<MemoryKey>, ProvisioningResult, MemoryKey, M), Error>
 where
     HC: 'static + ClientImpl,
@@ -973,19 +982,27 @@ where
                 }
             })
             .and_then(move |(prov_result, runtime)| {
-                let thumb = prov_result.sha256_thumbprint().unwrap();
-
-                let k = memory_hsm.get(&KeyIdentity::Device, "primary").context(
-                    ErrorKind::Initialize(InitializeErrorReason::DpsProvisioningClient),
-                )?;
-                let sign_data = format!("{}{}{}", prov_result.hub_name(), prov_result.device_id(), thumb);
-                let digest = k.sign(SignatureAlgorithm::HMACSHA256,
-                                        sign_data.as_bytes()).context(ErrorKind::Initialize(InitializeErrorReason::DpsProvisioningClient),)?;
-                let hybrid_derived_key = MemoryKey::new(digest.as_bytes());
-                let derived_key_store = DerivedKeyStore::new(hybrid_derived_key);
-                Ok((derived_key_store, prov_result, k, runtime))
+                let (derived_key_store, hybrid_derived_key) = prepare_hybrid_key(&memory_hsm, &cert_thumbprint, prov_result.hub_name(), prov_result.device_id())?;
+                Ok((derived_key_store, prov_result, hybrid_derived_key, runtime))
             });
     tokio_runtime.block_on(provision)
+}
+
+fn prepare_hybrid_key(
+    key_store: &MemoryKeyStore,
+    cert_thumbprint: &str,
+    hub_name: &str,
+    device_id: &str,
+) -> Result<(DerivedKeyStore<MemoryKey>, MemoryKey), Error> {
+    let k = key_store.get(&KeyIdentity::Device, "primary").context(
+        ErrorKind::Initialize(InitializeErrorReason::DpsProvisioningClient),
+    )?;
+    let sign_data = format!("{}{}{}", hub_name, device_id, cert_thumbprint);
+    let digest = k.sign(SignatureAlgorithm::HMACSHA256,
+                         sign_data.as_bytes()).context(ErrorKind::Initialize(InitializeErrorReason::DpsProvisioningClient),)?;
+    let hybrid_derived_key = MemoryKey::new(digest.as_bytes());
+    let derived_key_store = DerivedKeyStore::new(hybrid_derived_key.clone());
+    Ok((derived_key_store, hybrid_derived_key))
 }
 
 fn dps_symmetric_key_provision<HC, M>(

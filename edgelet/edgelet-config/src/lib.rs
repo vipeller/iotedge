@@ -192,19 +192,17 @@ pub struct X509AttestationInfo {
     registration_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     device_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    identity_cert: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    identity_pk: Option<PathBuf>,
+    identity_cert: PathBuf,
+    identity_pk: PathBuf,
 }
 
 impl X509AttestationInfo {
-    pub fn identity_cert(&self) -> Option<&Path> {
-        self.identity_cert.as_ref().map(|p| p.as_path())
+    pub fn identity_cert(&self) -> &Path {
+        self.identity_cert.as_path()
     }
 
-    pub fn identity_pk(&self) -> Option<&Path> {
-        self.identity_pk.as_ref().map(|p| p.as_path())
+    pub fn identity_pk(&self) -> &Path {
+        self.identity_pk.as_path()
     }
 
     pub fn device_id(&self) -> Option<&str> {
@@ -451,7 +449,15 @@ where
             let mut file = OpenOptions::new().read(true).open(path)?;
             let mut buffer = String::new();
             file.read_to_string(&mut buffer)?;
-            let s = serde_json::to_string(cached_settings)?;
+            let mut s = serde_json::to_string(cached_settings)?;
+            if let Provisioning::Dps(dps) = cached_settings.provisioning() {
+                if let AttestationMethod::X509(x509_info) = dps.attestation() {
+                    let mut file = OpenOptions::new().read(true).open(x509_info.identity_cert())?;
+                    let mut cert = String::new();
+                    file.read_to_string(&mut cert)?;
+                    s.push_str(&cert);
+                }
+            }
             let s = Sha256::digest_str(&s);
             let encoded = base64::encode(&s);
             if encoded == buffer {

@@ -143,10 +143,16 @@ impl<C: CreateCertificate + Clone> CertificateManager<C> {
     }
 
     fn create_cert(&self) -> Result<Certificate, Error> {
-        let cert = self
+        let cert_res = self
             .crypto
-            .create_certificate(&self.props)
-            .with_context(|_| ErrorKind::CertificateCreationError)?;
+            .create_certificate(&self.props);
+
+        let cert = if cert_res.is_err() {
+            self.crypto.destroy_certificate(self.props.alias().to_string()).unwrap();
+            self.crypto.create_certificate(&self.props).unwrap()
+        } else {
+            cert_res.unwrap()
+        };
 
         let cert_pem = cert
             .pem()
