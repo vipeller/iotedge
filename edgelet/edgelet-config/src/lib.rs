@@ -555,14 +555,6 @@ mod tests {
     #[cfg(unix)]
     static GOOD_SETTINGS2: &str = "test/linux/sample_settings2.yaml";
     #[cfg(unix)]
-    static X509_GOOD_SETTINGS1: &str = "test/linux/sample_settings.dps.x509.1.yaml";
-    #[cfg(unix)]
-    static X509_GOOD_SETTINGS2: &str = "test/linux/sample_settings.dps.x509.2.yaml";
-    #[cfg(unix)]
-    static X509_GOOD_SETTINGS3: &str = "test/linux/sample_settings.dps.x509.3.yaml";
-    #[cfg(unix)]
-    static X509_GOOD_SETTINGS4: &str = "test/linux/sample_settings.dps.x509.4.yaml";
-    #[cfg(unix)]
     static BAD_SETTINGS: &str = "test/linux/bad_sample_settings.yaml";
     #[cfg(unix)]
     static GOOD_SETTINGS_TG: &str = "test/linux/sample_settings.tg.yaml";
@@ -582,6 +574,16 @@ mod tests {
     static BAD_SETTINGS_DPS_DEFAULT: &str = "test/linux/bad_sample_settings.dps.default.yaml";
     #[cfg(unix)]
     static BAD_SETTINGS_DPS_SYM_KEY: &str = "test/linux/bad_sample_settings.dps.sym.yaml";
+    #[cfg(unix)]
+    static BAD_SETTINGS_DPS_X5091: &str = "test/linux/bad_settings.dps.x509.1.yaml";
+    #[cfg(unix)]
+    static BAD_SETTINGS_DPS_X5092: &str = "test/linux/bad_settings.dps.x509.2.yaml";
+    #[cfg(unix)]
+    static X509_GOOD_SETTINGS1: &str = "test/linux/sample_settings.dps.x509.1.yaml";
+    #[cfg(unix)]
+    static X509_GOOD_SETTINGS2: &str = "test/linux/sample_settings.dps.x509.2.yaml";
+    #[cfg(unix)]
+    static X509_GOOD_SETTINGS3: &str = "test/linux/sample_settings.dps.x509.3.yaml";
 
     #[cfg(windows)]
     static GOOD_SETTINGS: &str = "test/windows/sample_settings.yaml";
@@ -589,14 +591,6 @@ mod tests {
     static GOOD_SETTINGS1: &str = "test/windows/sample_settings1.yaml";
     #[cfg(windows)]
     static GOOD_SETTINGS2: &str = "test/windows/sample_settings2.yaml";
-    #[cfg(windows)]
-    static X509_GOOD_SETTINGS1: &str = "test/windows/sample_settings.dps.x509.1.yaml";
-    #[cfg(windows)]
-    static X509_GOOD_SETTINGS2: &str = "test/windows/sample_settings.dps.x509.2.yaml";
-    #[cfg(windows)]
-    static X509_GOOD_SETTINGS3: &str = "test/windows/sample_settings.dps.x509.3.yaml";
-    #[cfg(windows)]
-    static X509_GOOD_SETTINGS4: &str = "test/windows/sample_settings.dps.x509.4.yaml";
     #[cfg(windows)]
     static BAD_SETTINGS: &str = "test/windows/bad_sample_settings.yaml";
     #[cfg(windows)]
@@ -617,6 +611,16 @@ mod tests {
     static BAD_SETTINGS_DPS_DEFAULT: &str = "test/windows/bad_sample_settings.dps.default.yaml";
     #[cfg(windows)]
     static BAD_SETTINGS_DPS_SYM_KEY: &str = "test/windows/bad_sample_settings.dps.sym.yaml";
+    #[cfg(windows)]
+    static X509_GOOD_SETTINGS1: &str = "test/windows/sample_settings.dps.x509.1.yaml";
+    #[cfg(windows)]
+    static X509_GOOD_SETTINGS2: &str = "test/windows/sample_settings.dps.x509.2.yaml";
+    #[cfg(windows)]
+    static X509_GOOD_SETTINGS3: &str = "test/windows/sample_settings.dps.x509.3.yaml";
+    #[cfg(windows)]
+    static BAD_SETTINGS_DPS_X5091: &str = "test/windows/bad_settings.dps.x509.1.yaml";
+    #[cfg(windows)]
+    static BAD_SETTINGS_DPS_X5092: &str = "test/windows/bad_settings.dps.x509.2.yaml";
 
     fn unwrap_manual_provisioning(p: &Provisioning) -> String {
         match p {
@@ -659,6 +663,12 @@ mod tests {
         assert!(settings.is_err());
 
         let settings = Settings::<DockerConfig>::new(Some(Path::new(BAD_SETTINGS_DPS_SYM_KEY)));
+        assert!(settings.is_err());
+
+        let settings = Settings::<DockerConfig>::new(Some(Path::new(BAD_SETTINGS_DPS_X5091)));
+        assert!(settings.is_err());
+
+        let settings = Settings::<DockerConfig>::new(Some(Path::new(BAD_SETTINGS_DPS_X5092)));
         assert!(settings.is_err());
     }
 
@@ -779,8 +789,8 @@ mod tests {
                     AttestationMethod::X509(ref x509) => {
                         assert!(x509.registration_id().is_none());
                         assert!(x509.device_id().is_none());
-                        assert!(x509.identity_cert().is_none());
-                        assert!(x509.identity_pk().is_none());
+                        assert_eq!(x509.identity_cert(), Path::new("some/path/mr.t.cer.pem"));
+                        assert_eq!(x509.identity_pk(), Path::new("some/path/mr.t.pk.pem"));
                     }
                     _ => unreachable!(),
                 }
@@ -804,8 +814,8 @@ mod tests {
                     AttestationMethod::X509(ref x509) => {
                         assert_eq!(x509.registration_id().unwrap(), "register me fool");
                         assert!(x509.device_id().is_none());
-                        assert!(x509.identity_cert().is_none());
-                        assert!(x509.identity_pk().is_none());
+                        assert_eq!(x509.identity_cert(), Path::new("some/path/mr.t.cer.pem"));
+                        assert_eq!(x509.identity_pk(), Path::new("some/path/mr.t.pk.pem"));
                     }
                     _ => unreachable!(),
                 }
@@ -829,33 +839,8 @@ mod tests {
                     AttestationMethod::X509(ref x509) => {
                         assert_eq!(x509.registration_id(), Some("register me fool"));
                         assert_eq!(x509.device_id(), Some("d1"));
-                        assert!(x509.identity_cert().is_none());
-                        assert!(x509.identity_pk().is_none());
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            _ => unreachable!(),
-        };
-    }
-
-    #[test]
-    fn dps_prov_x509_no_default_settings() {
-        let settings = Settings::<DockerConfig>::new(Some(Path::new(X509_GOOD_SETTINGS4)));
-        println!("{:?}", settings);
-        assert!(settings.is_ok());
-        let s = settings.unwrap();
-        match s.provisioning() {
-            Provisioning::Dps(ref dps) => {
-                assert_eq!(dps.global_endpoint().scheme(), "scheme");
-                assert_eq!(dps.global_endpoint().host_str().unwrap(), "jibba-jabba.net");
-                assert_eq!(dps.scope_id(), "i got no time for the jibba-jabba");
-                match dps.attestation() {
-                    AttestationMethod::X509(ref x509) => {
-                        assert_eq!(x509.registration_id(), Some("register me fool"));
-                        assert_eq!(x509.device_id(), Some("d1"));
-                        assert_eq!(x509.identity_cert(), Some(Path::new("some/path/mr.t.cer.pem")));
-                        assert_eq!(x509.identity_pk(), Some(Path::new("some/path/mr.t.pk.pem")));
+                        assert_eq!(x509.identity_cert(), Path::new("some/path/mr.t.cer.pem"));
+                        assert_eq!(x509.identity_pk(), Path::new("some/path/mr.t.pk.pem"));
                     }
                     _ => unreachable!(),
                 }

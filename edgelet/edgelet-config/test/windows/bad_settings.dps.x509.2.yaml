@@ -7,7 +7,6 @@ provisioning:
     method: "x509"
     registration_id: "register me fool"
     device_id: "d1"
-    identity_cert: "some/path/mr.t.cer.pem"
     identity_pk: "some/path/mr.t.pk.pem"
 
 agent:
