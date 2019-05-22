@@ -55,7 +55,7 @@ use edgelet_core::crypto::{
 use edgelet_core::watchdog::Watchdog;
 use edgelet_core::{
     Authenticator, Certificate, CertificateIssuer, CertificateProperties, CertificateType, Module,
-    ModuleRuntime, ModuleRuntimeErrorReason, ModuleSpec, UrlExt, WorkloadConfig, UNIX_SCHEME, KeyBytes, PrivateKey,
+    ModuleRuntime, ModuleRuntimeErrorReason, ModuleSpec, UrlExt, WorkloadConfig, UNIX_SCHEME,
 };
 use edgelet_docker::{DockerConfig, DockerModuleRuntime};
 use edgelet_hsm::tpm::{TpmKey, TpmKeyStore};
@@ -73,7 +73,7 @@ use hsm::ManageTpmKeys;
 use iothubservice::DeviceClient;
 use provisioning::provisioning::{
     BackupProvisioning, DpsSymmetricKeyProvisioning, DpsTpmProvisioning, ManualProvisioning,
-    Provision, ProvisioningResult, ReprovisioningStatus, DpsX509HybridProvisioning
+    Provision, ProvisioningResult, ReprovisioningStatus, DpsX509Provisioning
 };
 
 use crate::workload::WorkloadData;
@@ -430,9 +430,9 @@ impl Main {
                             None => {common_name},
                         };
 
-                        let pem = cert_to_pem_cert(&dc, None, None)
+                        let pem = PemCertificate::from(&dc)
                                     .context(ErrorKind::Initialize(InitializeErrorReason::Hsm))?;
-                        let hyper_client = MaybeProxyClient::new_with_identity_cert(get_proxy_uri(None)?, pem)
+                        let hyper_client = MaybeProxyClient::new_with_identity_cert(get_proxy_uri(None)?, pem, None)
                                             .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
 
                         let key_bytes = hybrid_identity_key
@@ -461,6 +461,11 @@ impl Main {
         info!("Shutdown complete.");
         Ok(())
     }
+}
+
+fn get_thumbprint<T: Certificate>(id_cert: &T) -> Result<String, Error> {
+    let cert_pem = id_cert.pem().context(ErrorKind::Initialize(InitializeErrorReason::Hsm))?;
+    Ok(format!("{:x}", Sha256::digest(cert_pem.as_bytes())))
 }
 
 pub fn get_proxy_uri(https_proxy: Option<String>) -> Result<Option<Uri>, Error> {
@@ -927,7 +932,7 @@ where
         .activate_identity_key(KeyIdentity::Device, "primary".to_string(), hybrid_identity_key)
         .context(ErrorKind::ActivateSymmetricKey)?;
 
-    let dps = DpsX509HybridProvisioning::new(
+    let dps = DpsX509Provisioning::new(
         hyper_client,
         provisioning.global_endpoint().clone(),
         provisioning.scope_id().to_string(),

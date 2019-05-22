@@ -163,6 +163,8 @@ pub enum InitializeErrorReason {
     HttpClient,
     HybridIdentityFile,
     InvalidDeviceCertCredentials,
+    InvalidDeviceConfig,
+    InvalidHubConfig,
     InvalidProxyUri,
     InvalidSocketUri,
     IssuerCAExpiration,
