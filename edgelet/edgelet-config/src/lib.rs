@@ -471,7 +471,9 @@ where
             let mut s = serde_json::to_string(cached_settings)?;
             if let Provisioning::Dps(dps) = cached_settings.provisioning() {
                 if let AttestationMethod::X509(x509_info) = dps.attestation() {
-                    let mut file = OpenOptions::new().read(true).open(x509_info.identity_cert())?;
+                    let mut file = OpenOptions::new()
+                        .read(true)
+                        .open(x509_info.identity_cert())?;
                     let mut cert = String::new();
                     file.read_to_string(&mut cert)?;
                     s.push_str(&cert);

@@ -219,9 +219,13 @@ impl fmt::Display for InitializeErrorReason {
 
             InitializeErrorReason::HttpClient => write!(f, "Could not initialize HTTP client"),
 
-            InitializeErrorReason::HybridIdentityFile => write!(f, "Invalid hybrid identity key file"),
+            InitializeErrorReason::HybridIdentityFile => {
+                write!(f, "Invalid hybrid identity key file")
+            }
 
-            InitializeErrorReason::InvalidDeviceCertCredentials => write!(f, "Invalid identity certificate"),
+            InitializeErrorReason::InvalidDeviceCertCredentials => {
+                write!(f, "Invalid identity certificate")
+            }
 
             InitializeErrorReason::InvalidDeviceConfig => {
                 write!(f, "Invalid device configuration was provided")
