@@ -64,6 +64,7 @@ provisioning:
 #     device_id: "<OPTIONAL DEVICE ID TO BE PROVISIONED IN IOTHUB>"
 #     identity_cert: "<REQUIRED PATH TO DEVICE IDENTITY CERTIFICATE HERE>"
 #     identity_pk: "<REQUIRED PATH TO DEVICE IDENTITY PRIVATE KEY HERE>"
+
 ###############################################################################
 # Certificate settings
 ###############################################################################
