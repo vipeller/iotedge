@@ -62,9 +62,8 @@ provisioning:
 #     method: "x509"
 #     registration_id: "<OPTIONAL REGISTRATION ID. IF UNSPECIFIED CAN BE OBTAINED FROM CN OF identity_cert"
 #     device_id: "<OPTIONAL DEVICE ID TO BE PROVISIONED IN IOTHUB>"
-#     identity_cert: "<OPTIONAL PATH TO DEVICE IDENTITY CERTIFICATE HERE. IF UNSPECIFIED, DEVICE CA WILL ISSUE ONE>"
-#     identity_pk: "<OPTIONAL PATH TO DEVICE IDENTITY PRIVATE KEY HERE. IF UNSPECIFIED, DEVICE CA WILL ISSUE ONE>"
-
+#     identity_cert: "<REQUIRED PATH TO DEVICE IDENTITY CERTIFICATE HERE>"
+#     identity_pk: "<REQUIRED PATH TO DEVICE IDENTITY PRIVATE KEY HERE>"
 ###############################################################################
 # Certificate settings
 ###############################################################################

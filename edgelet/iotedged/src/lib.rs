@@ -50,19 +50,20 @@ use edgelet_config::{
 use edgelet_core::crypto::{
     Activate, CreateCertificate, Decrypt, DerivedKeyStore, Encrypt, GetIssuerAlias, GetTrustBundle,
     KeyIdentity, KeyStore, MasterEncryptionKey, MemoryKey, MemoryKeyStore, Sign, IOTEDGED_CA_ALIAS,
+    GetDeviceIdentityCertificate, MakeRandom, SignatureAlgorithm, Signature
 };
 use edgelet_core::watchdog::Watchdog;
 use edgelet_core::{
     Authenticator, Certificate, CertificateIssuer, CertificateProperties, CertificateType, Module,
-    ModuleRuntime, ModuleRuntimeErrorReason, ModuleSpec, UrlExt, WorkloadConfig, UNIX_SCHEME,
+    ModuleRuntime, ModuleRuntimeErrorReason, ModuleSpec, UrlExt, WorkloadConfig, UNIX_SCHEME, KeyBytes, PrivateKey,
 };
 use edgelet_docker::{DockerConfig, DockerModuleRuntime};
 use edgelet_hsm::tpm::{TpmKey, TpmKeyStore};
-use edgelet_hsm::{Crypto, HsmLock};
+use edgelet_hsm::{Crypto, X509, HsmLock};
 use edgelet_http::certificate_manager::CertificateManager;
 use edgelet_http::client::{Client as HttpClient, ClientImpl};
 use edgelet_http::logging::LoggingService;
-use edgelet_http::{HyperExt, MaybeProxyClient, API_VERSION};
+use edgelet_http::{HyperExt, MaybeProxyClient, API_VERSION, PemCertificate};
 use edgelet_http_mgmt::ManagementService;
 use edgelet_http_workload::WorkloadService;
 use edgelet_iothub::{HubIdentityManager, SasTokenSource};
@@ -72,7 +73,7 @@ use hsm::ManageTpmKeys;
 use iothubservice::DeviceClient;
 use provisioning::provisioning::{
     BackupProvisioning, DpsSymmetricKeyProvisioning, DpsTpmProvisioning, ManualProvisioning,
-    Provision, ProvisioningResult, ReprovisioningStatus,
+    Provision, ProvisioningResult, ReprovisioningStatus, DpsX509HybridProvisioning
 };
 
 use crate::workload::WorkloadData;
@@ -143,8 +144,24 @@ const EDGE_PROVISIONING_BACKUP_FILENAME: &str = "provisioning_backup.json";
 /// This is the name of the settings backup file
 const EDGE_SETTINGS_STATE_FILENAME: &str = "settings_state";
 
+/// This is the name of the hybrid X509-SAS key file
+const EDGE_HYBRID_IDENTITY_MASTER_KEY_FILENAME: &str = "iotedge_hybrid_key";
+/// This is the name of the hybrid X509-SAS initialization vector
+const EDGE_HYBRID_IDENTITY_MASTER_KEY_IV_FILENAME: &str = "iotedge_hybrid_iv";
+/// Size in bytes of the master identity key
+const IDENTITY_MASTER_KEY_LEN_BYTES:usize = 32;
+/// Size in bytes of the initialization vector
+const IOTEDGED_CRYPTO_IV_LEN_BYTES:usize = 16;
+/// Identity to be used for various crypto operations
+const IOTEDGED_CRYPTO_ID: &str = "$iotedge";
+
 /// This is the name of the cache subdirectory for settings state
 const EDGE_SETTINGS_SUBDIR: &str = "cache";
+
+const DPS_REGISTRATION_ID_ENV_KEY: &str = "IOTEDGE_REGISTRATION_ID";
+const DPS_DEVICE_ID_CERT_ENV_KEY: &str = "IOTEDGE_DEVICE_IDENTITY_CERT";
+const DPS_DEVICE_ID_KEY_ENV_KEY: &str = "IOTEDGE_DEVICE_IDENTITY_PK";
+const DPS_DEVICE_ID_ENV_KEY: &str = "IOTEDGE_DEVICE_ID";
 
 /// These are the properties of the workload CA certificate
 const IOTEDGED_VALIDITY: u64 = 7_776_000; // 90 days
@@ -162,6 +179,12 @@ enum StartApiReturnStatus {
 
 pub struct Main {
     settings: Settings<DockerConfig>,
+}
+
+#[derive(PartialEq)]
+enum ProvisioningAuthMethod {
+    X509,
+    SharedAccessKey,
 }
 
 impl Main {
@@ -188,9 +211,6 @@ impl Main {
                 )));
             }
         }
-
-        let hyper_client = MaybeProxyClient::new(get_proxy_uri(None)?)
-            .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
 
         info!(
             "Using runtime network id {}",
@@ -228,24 +248,83 @@ impl Main {
                 env::set_var(TRUSTED_CA_CERTS_KEY, path);
             }
         };
-        info!("Finished configuring certificates.");
+
+        if let Provisioning::Dps(dps) = settings.provisioning() {
+            match dps.attestation() {
+                AttestationMethod::Tpm(ref tpm) => {
+                    env::set_var(DPS_REGISTRATION_ID_ENV_KEY, tpm.registration_id().to_string());
+
+                    if let Some(val) = tpm.device_id() {
+                        env::set_var(DPS_DEVICE_ID_ENV_KEY, val.to_string());
+                    }
+                },
+                AttestationMethod::SymmetricKey(ref symmetric_key_info) => {
+                    env::set_var(DPS_REGISTRATION_ID_ENV_KEY, symmetric_key_info.registration_id().to_string());
+
+                    if let Some(val) = symmetric_key_info.device_id() {
+                        env::set_var(DPS_DEVICE_ID_ENV_KEY, val.to_string());
+                    }
+                },
+                AttestationMethod::X509(ref x509_info) => {
+                    if let Some(val) = x509_info.registration_id() {
+                        env::set_var(DPS_REGISTRATION_ID_ENV_KEY, val.to_string());
+                    }
+
+                    if let Some(val) = x509_info.device_id() {
+                        env::set_var(DPS_DEVICE_ID_ENV_KEY, val.to_string());
+                    }
+
+                    env::set_var(DPS_DEVICE_ID_CERT_ENV_KEY, x509_info.identity_cert());
+                    env::set_var(DPS_DEVICE_ID_KEY_ENV_KEY, x509_info.identity_pk());
+                }
+            }
+        }
+        info!("Finished configuring provisioning environment variables and certificates.");
 
         info!("Initializing hsm...");
         let crypto = Crypto::new(hsm_lock.clone())
             .context(ErrorKind::Initialize(InitializeErrorReason::Hsm))?;
+
+        let (hyper_client, device_identity_cert, cert_thumbprint) =
+            if get_provisioning_auth_method(&settings) == ProvisioningAuthMethod::X509 {
+            let hyper_client = MaybeProxyClient::new(get_proxy_uri(None)?)
+                                .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
+
+            let x509 = X509::new(hsm_lock.clone())
+                .context(ErrorKind::Initialize(InitializeErrorReason::Hsm))?;
+
+            let device_identity_cert = x509.get().context(ErrorKind::Initialize(
+                InitializeErrorReason::DpsProvisioningClient,
+            ))?;
+
+            let cert_thumbprint = get_thumbprint(&device_identity_cert).context(ErrorKind::Initialize(
+                            InitializeErrorReason::DpsProvisioningClient,
+                        ))?;
+
+            (hyper_client, Some(device_identity_cert), Some(cert_thumbprint))
+        }
+        else
+        {
+            let hyper_client = MaybeProxyClient::new(get_proxy_uri(None)?)
+                                .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
+
+            (hyper_client, None, None)
+        };
+
         info!("Finished initializing hsm.");
 
         // Detect if the settings were changed and if the device needs to be reconfigured
         let cache_subdir_path = Path::new(&settings.homedir()).join(EDGE_SETTINGS_SUBDIR);
-        check_settings_state(
+        let hybrid_identity_key = check_settings_state(
             cache_subdir_path.clone(),
             EDGE_SETTINGS_STATE_FILENAME,
             &settings,
             &runtime,
             &crypto,
             &mut tokio_runtime,
+            EDGE_HYBRID_IDENTITY_MASTER_KEY_FILENAME,
+            EDGE_HYBRID_IDENTITY_MASTER_KEY_IV_FILENAME,
         )?;
-
         info!("Provisioning edge device...");
         match settings.provisioning() {
             Provisioning::Manual(manual) => {
@@ -335,9 +414,45 @@ impl Main {
                             )?;
                         start_edgelet!(key_store, provisioning_result, root_key, runtime);
                     }
-                    AttestationMethod::X509(ref _x509) => {
-                        panic!("Provisioning of Edge device via x509 is currently unsupported");
-                        // TODO: implement
+                    AttestationMethod::X509(ref x509_info) => {
+                        info!("Starting provisioning edge device via X509 provisioning...");
+
+                        let dc = device_identity_cert
+                            .ok_or_else(|| ErrorKind::Initialize(InitializeErrorReason::DpsProvisioningClient))?;
+
+                        let common_name = dc.get_common_name()
+                                    .context(ErrorKind::Initialize(
+                                        InitializeErrorReason::DpsProvisioningClient,
+                                    ))?;
+
+                        let reg_id = match x509_info.registration_id() {
+                            Some(id) => { id.to_string() },
+                            None => {common_name},
+                        };
+
+                        let pem = cert_to_pem_cert(&dc, None, None)
+                                    .context(ErrorKind::Initialize(InitializeErrorReason::Hsm))?;
+                        let hyper_client = MaybeProxyClient::new_with_identity_cert(get_proxy_uri(None)?, pem)
+                                            .context(ErrorKind::Initialize(InitializeErrorReason::HttpClient))?;
+
+                        let key_bytes = hybrid_identity_key
+                                        .ok_or_else(|| ErrorKind::Initialize(InitializeErrorReason::DpsProvisioningClient))?;
+
+                        let thumbprint = cert_thumbprint
+                            .ok_or_else(|| ErrorKind::Initialize(InitializeErrorReason::DpsProvisioningClient))?;
+
+                        let (key_store, provisioning_result, root_key, runtime) =
+                            dps_x509_provision(
+                                reg_id,
+                                &dps,
+                                hyper_client.clone(),
+                                dps_path,
+                                runtime,
+                                &mut tokio_runtime,
+                                &key_bytes,
+                                thumbprint,
+                            )?;
+                        start_edgelet!(key_store, provisioning_result, root_key, runtime);
                     }
                 }
             }
@@ -439,61 +554,114 @@ where
 
 fn check_settings_state<M, C>(
     subdir_path: PathBuf,
-    filename: &str,
+    settings_state_filename: &str,
     settings: &Settings<DockerConfig>,
     runtime: &M,
     crypto: &C,
     tokio_runtime: &mut tokio::runtime::Runtime,
-) -> Result<(), Error>
+    hybrid_id_filename: &str,
+    hybrid_iv_filename: &str,
+) -> Result<(Option<Vec<u8>>), Error>
 where
     M: ModuleRuntime,
     <M as ModuleRuntime>::RemoveAllFuture: 'static,
-    C: CreateCertificate + GetIssuerAlias + MasterEncryptionKey,
+    C: CreateCertificate + Decrypt + Encrypt + GetIssuerAlias + MasterEncryptionKey + MakeRandom,
 {
     info!("Detecting if configuration file has changed...");
-    let path = subdir_path.join(filename);
-    let mut reconfig_reqd = false;
-    let diff = settings.diff_with_cached(&path);
-    if diff {
-        info!("Change to configuration file detected.");
-        reconfig_reqd = true;
-    } else {
-        info!("No change to configuration file detected.");
 
-        #[allow(clippy::single_match_else)]
-        match prepare_workload_ca(crypto) {
-            Ok(()) => info!("Obtaining workload CA succeeded."),
-            Err(_) => {
-                reconfig_reqd = true;
-                info!("Obtaining workload CA failed. Triggering reconfiguration");
-            }
-        };
+    // check if the identity file exists and contains a valid key
+    let key_path = subdir_path.join(hybrid_id_filename);
+    let iv_path = subdir_path.join(hybrid_iv_filename);
+    let mut hybrid_id_key: Option<Vec<u8>> = None;
+
+    // todo make idiomatic
+    let mut reconfig_reqd = if get_provisioning_auth_method(settings) != ProvisioningAuthMethod::X509 {
+        false
+    } else {
+        match fs::read(key_path.as_path()) {
+            Ok(enc_identity_key) => {
+                let result = match fs::read(iv_path.as_path()) {
+                    Ok(iv) => {
+                        match crypto.decrypt(IOTEDGED_CRYPTO_ID.as_bytes(), enc_identity_key.as_ref(), &iv) {
+                            Ok(identity_key) => {
+                                if identity_key.as_ref().len() == IDENTITY_MASTER_KEY_LEN_BYTES {
+                                    hybrid_id_key = Some(identity_key.as_ref().to_vec());
+                                    false
+                                } else {
+                                    true
+                                }
+                            },
+                            Err(_err) => true,
+                        }
+                    },
+                    Err(_err) => true,
+                };
+                result
+            },
+            Err(_err) => true,
+        }
+    };
+
+    if !reconfig_reqd {
+        let path = subdir_path.join(settings_state_filename);
+        let diff = settings.diff_with_cached(&path);
+        if diff {
+            info!("Change to configuration file detected.");
+            reconfig_reqd = true;
+        } else {
+            info!("No change to configuration file detected.");
+
+            #[allow(clippy::single_match_else)]
+            match prepare_workload_ca(crypto) {
+                Ok(()) => info!("Obtaining workload CA succeeded."),
+                Err(_) => {
+                    reconfig_reqd = true;
+                    info!("Obtaining workload CA failed. Triggering reconfiguration");
+                }
+            };
+        }
     }
+
     if reconfig_reqd {
-        reconfigure(
+        hybrid_id_key = reconfigure(
             subdir_path,
-            filename,
+            settings_state_filename,
             settings,
             runtime,
             crypto,
             tokio_runtime,
+            hybrid_id_filename,
+            hybrid_iv_filename,
         )?;
     }
-    Ok(())
+    Ok(hybrid_id_key)
+}
+
+fn get_provisioning_auth_method(settings: &Settings<DockerConfig>) -> ProvisioningAuthMethod
+{
+    let mut method = ProvisioningAuthMethod::SharedAccessKey;
+    if let Provisioning::Dps(dps) = settings.provisioning() {
+        if let AttestationMethod::X509(_) = dps.attestation() {
+            method = ProvisioningAuthMethod::X509;
+        }
+    }
+    method
 }
 
 fn reconfigure<M, C>(
     subdir: PathBuf,
-    filename: &str,
+    settings_state_filename: &str,
     settings: &Settings<DockerConfig>,
     runtime: &M,
     crypto: &C,
     tokio_runtime: &mut tokio::runtime::Runtime,
-) -> Result<(), Error>
+    hybrid_id_filename: &str,
+    hybrid_iv_filename: &str,
+) -> Result<(Option<Vec<u8>>), Error>
 where
     M: ModuleRuntime,
     <M as ModuleRuntime>::RemoveAllFuture: 'static,
-    C: CreateCertificate + GetIssuerAlias + MasterEncryptionKey,
+    C: CreateCertificate + Decrypt + Encrypt + GetIssuerAlias + MasterEncryptionKey + MakeRandom,
 {
     // Remove all edge containers and destroy the cache (settings and dps backup)
     info!("Removing all modules...");
@@ -508,11 +676,11 @@ where
     // configuration and shouldn't stall the current configuration because of that
     let _u = fs::remove_dir_all(subdir.clone());
 
-    let path = subdir.join(filename);
+    let path = subdir.clone().join(settings_state_filename);
 
     DirBuilder::new()
         .recursive(true)
-        .create(subdir)
+        .create(subdir.clone())
         .context(ErrorKind::Initialize(
             InitializeErrorReason::CreateSettingsDirectory,
         ))?;
@@ -533,7 +701,34 @@ where
     file.write_all(sb.as_bytes())
         .context(ErrorKind::Initialize(InitializeErrorReason::SaveSettings))?;
 
-    Ok(())
+    let mut identity_master_key: Option<Vec<u8>> = None;
+    if get_provisioning_auth_method(settings) == ProvisioningAuthMethod::X509 {
+        let mut key_bytes: [u8; IDENTITY_MASTER_KEY_LEN_BYTES] = [0; IDENTITY_MASTER_KEY_LEN_BYTES];
+        crypto.get_random_bytes(& mut key_bytes).context(ErrorKind::Initialize(InitializeErrorReason::SaveSettings))?;
+
+        let mut iv: [u8; IOTEDGED_CRYPTO_IV_LEN_BYTES] = [0; IOTEDGED_CRYPTO_IV_LEN_BYTES];
+        crypto.get_random_bytes(& mut iv).context(ErrorKind::Initialize(InitializeErrorReason::SaveSettings))?;
+
+        let enc_identity_key = crypto
+            .encrypt(IOTEDGED_CRYPTO_ID.as_bytes(), &key_bytes, &iv)
+            .context(ErrorKind::Initialize(InitializeErrorReason::SaveSettings))?;
+
+        let path = subdir.clone().join(hybrid_id_filename);
+        let mut file =
+            File::create(path).context(ErrorKind::Initialize(InitializeErrorReason::SaveSettings))?;
+        file.write_all(enc_identity_key.as_bytes())
+            .context(ErrorKind::Initialize(InitializeErrorReason::SaveSettings))?;
+
+        let path = subdir.join(hybrid_iv_filename);
+        let mut file =
+            File::create(path).context(ErrorKind::Initialize(InitializeErrorReason::SaveSettings))?;
+        file.write_all(&iv)
+            .context(ErrorKind::Initialize(InitializeErrorReason::SaveSettings))?;
+
+        identity_master_key = Some(key_bytes.to_vec())
+    }
+
+    Ok(identity_master_key)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -710,6 +905,90 @@ fn manual_provision(
                 })
         });
     tokio_runtime.block_on(provision)
+}
+
+fn dps_x509_provision<HC, M>(
+    reg_id: String,
+    provisioning: &Dps,
+    hyper_client: HC,
+    backup_path: PathBuf,
+    runtime: M,
+    tokio_runtime: &mut tokio::runtime::Runtime,
+    hybrid_identity_key: &[u8],
+    cert_thumbprint: String,
+) -> Result<(DerivedKeyStore<MemoryKey>, ProvisioningResult, MemoryKey, M), Error>
+where
+    HC: 'static + ClientImpl,
+    M: ModuleRuntime + Send + 'static,
+{
+    let mut memory_hsm = MemoryKeyStore::new();
+
+    memory_hsm
+        .activate_identity_key(KeyIdentity::Device, "primary".to_string(), hybrid_identity_key)
+        .context(ErrorKind::ActivateSymmetricKey)?;
+
+    let dps = DpsX509HybridProvisioning::new(
+        hyper_client,
+        provisioning.global_endpoint().clone(),
+        provisioning.scope_id().to_string(),
+        reg_id,
+        DPS_API_VERSION.to_string(),
+    )
+    .context(ErrorKind::Initialize(
+        InitializeErrorReason::DpsProvisioningClient,
+    ))?;
+
+    let provision_with_file_backup = BackupProvisioning::new(dps, backup_path);
+
+    let provision =
+        provision_with_file_backup
+            .provision(memory_hsm.clone())
+            .map_err(|err| {
+                Error::from(err.context(ErrorKind::Initialize(
+                    InitializeErrorReason::DpsProvisioningClient,
+                )))
+            })
+            .and_then(move |prov_result| {
+                info!("Successful DPS provisioning.");
+                if prov_result.reconfigure() == ReprovisioningStatus::DeviceDataNotUpdated {
+                    Either::B(future::ok((prov_result, runtime)))
+                } else {
+                    info!(
+                        "Reprovisioning status {:?} will trigger reconfiguration of modules.",
+                        prov_result.reconfigure()
+                    );
+
+                    let remove = runtime.remove_all().then(|result| {
+                        result.context(ErrorKind::Initialize(
+                            InitializeErrorReason::DpsProvisioningClient,
+                        ))?;
+                        Ok((prov_result, runtime))
+                    });
+                    Either::A(remove)
+                }
+            })
+            .and_then(move |(prov_result, runtime)| {
+                let (derived_key_store, hybrid_derived_key) = prepare_hybrid_key(&memory_hsm, &cert_thumbprint, prov_result.hub_name(), prov_result.device_id())?;
+                Ok((derived_key_store, prov_result, hybrid_derived_key, runtime))
+            });
+    tokio_runtime.block_on(provision)
+}
+
+fn prepare_hybrid_key(
+    key_store: &MemoryKeyStore,
+    cert_thumbprint: &str,
+    hub_name: &str,
+    device_id: &str,
+) -> Result<(DerivedKeyStore<MemoryKey>, MemoryKey), Error> {
+    let k = key_store.get(&KeyIdentity::Device, "primary").context(
+        ErrorKind::Initialize(InitializeErrorReason::DpsProvisioningClient),
+    )?;
+    let sign_data = format!("{}{}{}", hub_name, device_id, cert_thumbprint);
+    let digest = k.sign(SignatureAlgorithm::HMACSHA256,
+                         sign_data.as_bytes()).context(ErrorKind::Initialize(InitializeErrorReason::DpsProvisioningClient),)?;
+    let hybrid_derived_key = MemoryKey::new(digest.as_bytes());
+    let derived_key_store = DerivedKeyStore::new(hybrid_derived_key.clone());
+    Ok((derived_key_store, hybrid_derived_key))
 }
 
 fn dps_symmetric_key_provision<HC, M>(
