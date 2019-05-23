@@ -6,7 +6,6 @@ provisioning:
   attestation:
     method: "x509"
     registration_id: "register me fool"
-    device_id: "d1"
     identity_pk: "some/path/mr.t.pk.pem"
 
 agent:
