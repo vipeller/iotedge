@@ -161,7 +161,6 @@ const EDGE_SETTINGS_SUBDIR: &str = "cache";
 const DPS_REGISTRATION_ID_ENV_KEY: &str = "IOTEDGE_REGISTRATION_ID";
 const DPS_DEVICE_ID_CERT_ENV_KEY: &str = "IOTEDGE_DEVICE_IDENTITY_CERT";
 const DPS_DEVICE_ID_KEY_ENV_KEY: &str = "IOTEDGE_DEVICE_IDENTITY_PK";
-const DPS_DEVICE_ID_ENV_KEY: &str = "IOTEDGE_DEVICE_ID";
 
 /// These are the properties of the workload CA certificate
 const IOTEDGED_VALIDITY: u64 = 7_776_000; // 90 days
@@ -256,28 +255,16 @@ impl Main {
                         DPS_REGISTRATION_ID_ENV_KEY,
                         tpm.registration_id().to_string(),
                     );
-
-                    if let Some(val) = tpm.device_id() {
-                        env::set_var(DPS_DEVICE_ID_ENV_KEY, val.to_string());
-                    }
                 }
                 AttestationMethod::SymmetricKey(ref symmetric_key_info) => {
                     env::set_var(
                         DPS_REGISTRATION_ID_ENV_KEY,
                         symmetric_key_info.registration_id().to_string(),
                     );
-
-                    if let Some(val) = symmetric_key_info.device_id() {
-                        env::set_var(DPS_DEVICE_ID_ENV_KEY, val.to_string());
-                    }
                 }
                 AttestationMethod::X509(ref x509_info) => {
                     if let Some(val) = x509_info.registration_id() {
                         env::set_var(DPS_REGISTRATION_ID_ENV_KEY, val.to_string());
-                    }
-
-                    if let Some(val) = x509_info.device_id() {
-                        env::set_var(DPS_DEVICE_ID_ENV_KEY, val.to_string());
                     }
 
                     env::set_var(DPS_DEVICE_ID_CERT_ENV_KEY, x509_info.identity_cert());
