@@ -438,11 +438,11 @@ where
         &self.watchdog
     }
 
-    pub fn diff_with_cached(&self, path: &Path) -> bool {
+    pub fn diff_with_cached(&self, path: &Path) -> (bool, String) {
         fn diff_with_cached_inner<T>(
             cached_settings: &Settings<T>,
             path: &Path,
-        ) -> Result<bool, LoadSettingsError>
+        ) -> Result<(bool, String), LoadSettingsError>
         where
             T: DeserializeOwned + Serialize,
         {
@@ -453,7 +453,7 @@ where
             if let Provisioning::Dps(dps) = cached_settings.provisioning() {
                 if let AttestationMethod::X509(x509_info) = dps.attestation() {
                     let mut file = OpenOptions::new()
-                        .read(true)
+                    .read(true)
                         .open(x509_info.identity_cert())?;
                     let mut cert = String::new();
                     file.read_to_string(&mut cert)?;
@@ -464,19 +464,19 @@ where
             let encoded = base64::encode(&s);
             if encoded == buffer {
                 debug!("Config state matches supplied config.");
-                Ok(false)
+                Ok(false, encoded)
             } else {
-                Ok(true)
+                Ok(true, encoded)
             }
         }
 
         match diff_with_cached_inner(self, path) {
-            Ok(result) => result,
+            Ok((is_diff, digest)) => (is_diff, digest),
 
             Err(err) => {
                 log_failure(Level::Debug, &err);
                 debug!("Error reading config backup.");
-                true
+                (true, String::new())
             }
         }
     }
@@ -923,5 +923,69 @@ mod tests {
         let s = settings.unwrap();
         let watchdog_settings = s.watchdog();
         assert_eq!(watchdog_settings.max_retries().compare(3), Ordering::Equal);
+    }
+
+    #[test]
+    fn x509_diff_also_checks_cert_file() {
+        let tmp_dir = TempDir::new("blah").unwrap();
+        let cert_path = tmp_dir.path().join("test_cert.pem");
+        FsFile::create(&cert_path)
+            .unwrap()
+            .write_all("CN=Mr. T".as_bytes())
+            .unwrap();
+        let settings_path = tmp_dir.path().join("test_settings.yaml");
+        let pre_settings_yaml =
+"
+provisioning:
+  source: \"dps\"
+  global_endpoint: \"scheme://jibba-jabba.net\"
+  scope_id: \"i got no time for the jibba-jabba\"
+  attestation:
+    method: \"x509\"
+    identity_pk: \"some/path/mr.t.pk.pem\"
+";
+        let settings_yaml = format!("{}    identity_cert: {}", pre_settings_yaml, cert_path.to_str().unwrap());
+        FsFile::create(&settings_path)
+            .unwrap()
+            .write_all(settings_yaml.as_bytes())
+            .unwrap();
+
+        let settings = Settings::<DockerConfig>::new(Some(&settings_path));
+        println!("{:?}", settings);
+        assert!(settings.is_ok());
+        let settings_to_write = serde_json::to_string(&settings).unwrap();
+        let sha_to_write = Sha256::digest_str(&settings_to_write);
+        let base64_to_write = base64::encode(&sha_to_write);
+
+
+        let path = tmp_dir.path().join("cache");
+        let settings1 = Settings::<DockerConfig>::new(Some(Path::new(GOOD_SETTINGS1))).unwrap();
+        let settings_to_write = serde_json::to_string(&settings1).unwrap();
+        let sha_to_write = Sha256::digest_str(&settings_to_write);
+        let base64_to_write = base64::encode(&sha_to_write);
+        FsFile::create(&path)
+            .unwrap()
+            .write_all(base64_to_write.as_bytes())
+            .unwrap();
+        let settings = Settings::<DockerConfig>::new(Some(Path::new(GOOD_SETTINGS))).unwrap();
+        assert_eq!(settings.diff_with_cached(&path), true);
+
+
+
+
+
+        // let path = tmp_dir.path().join("cache");
+        // let settings1 = Settings::<DockerConfig>::new(Some(Path::new(X509_GOOD_SETTINGS1))).unwrap();
+
+        // let settings_to_write = serde_json::to_string(&settings1).unwrap();
+        // let sha_to_write = Sha256::digest_str(&settings_to_write);
+        // let base64_to_write = base64::encode(&sha_to_write);
+        // FsFile::create(&path)
+        //     .unwrap()
+        //     .write_all(base64_to_write.as_bytes())
+        //     .unwrap();
+        // let settings = Settings::<DockerConfig>::new(Some(Path::new(GOOD_SETTINGS))).unwrap();
+        // assert_eq!(settings.diff_with_cached(&path), true);
+
     }
 }
