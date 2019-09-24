@@ -625,7 +625,7 @@ function run_longhaul_test() {
     local device_id="$RELEASE_LABEL-Linux-$image_architecture_label-longhaul"
 
     sed -i -e "s@<Analyzer.DeviceID>@$device_id@g" "$deployment_working_file"
-	sed -i -e "s@<Analyzer.ConsumerGroupId>@${EVENT_HUB_CONSUMER_GROUP:-longhaul}@g" "$deployment_working_file"
+	sed -i -e "s@<Analyzer.ConsumerGroupId>@${EVENT_HUB_CONSUMER_GROUP:-\$Default}@g" "$deployment_working_file"
 
     test_start_time="$(date '+%Y-%m-%d %H:%M:%S')"
     print_highlighted_message "Run Long Haul test with -d '$device_id' started at $test_start_time"
@@ -704,7 +704,7 @@ function run_stress_test() {
     local device_id="$RELEASE_LABEL-Linux-$image_architecture_label-stress"
 
     sed -i -e "s@<Analyzer.DeviceID>@$device_id@g" "$deployment_working_file"
-	sed -i -e "s@<Analyzer.ConsumerGroupId>@${EVENT_HUB_CONSUMER_GROUP:-stress}@g" "$deployment_working_file"
+	sed -i -e "s@<Analyzer.ConsumerGroupId>@${EVENT_HUB_CONSUMER_GROUP:-\$Default}@g" "$deployment_working_file"
 
     test_start_time="$(date '+%Y-%m-%d %H:%M:%S')"
     print_highlighted_message "Run Stress test with -d '$device_id' started at $test_start_time"
