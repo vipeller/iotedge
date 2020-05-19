@@ -159,7 +159,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
             {
                 // if this happens it means that previously a message was sent out with the same message id but
                 // then it wasn't deleted from the penging acks. that is either we went around with all the message ids
-                // or some program error didn't delete it. now much to do either way.
+                // or some program error didn't delete it. not much to do either way.
                 new Exception("Could not store message id to monitor Mqtt ACK");
             }
 
@@ -171,8 +171,8 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
         void ForwardPublish(object sender, MqttMsgPublishEventArgs e)
         {
             var isWritten = this.publications.Match(
-                              channel => channel.Writer.TryWrite(new MqttPublishInfo(e.Topic, e.Message)),
-                              () => false);
+                                    channel => channel.Writer.TryWrite(new MqttPublishInfo(e.Topic, e.Message)),
+                                    () => false);
 
             if (!isWritten)
             {
@@ -270,7 +270,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
                                             {
                                                 Events.FailedToForward(e);
 
-                                                // keep going...
+                                                // keep going with other consumers...
                                             }
                                         }
                                     }
