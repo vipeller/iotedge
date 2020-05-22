@@ -288,7 +288,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
 
         // these are statics, so they don't use the state to acquire 'client' - making easier to handle parallel
         // Reconnect/Disconnect cases
-        static async Task<bool> TryConnectAsync(MqttClient client, IReadOnlyCollection<IMqttSubscriber> subscribers)
+        static async Task<bool> TryConnectAsync(MqttClient client, IReadOnlyCollection<ISubscriber> subscribers)
         {
             try
             {
@@ -326,7 +326,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
             }
         }
 
-        static async Task SubscribeAsync(MqttClient client, IReadOnlyCollection<IMqttSubscriber> subscribers)
+        static async Task SubscribeAsync(MqttClient client, IReadOnlyCollection<ISubscriber> subscribers)
         {
             var expectedAckCount = subscribers.Count;
 

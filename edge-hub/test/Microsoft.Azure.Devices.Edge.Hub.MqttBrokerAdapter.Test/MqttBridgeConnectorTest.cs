@@ -289,14 +289,14 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter.Test
     {
         public DiscoveryStub()
         {
-            this.Subscribers = new IMqttSubscriber[0];
-            this.Producers = new IMqttMessageProducer[0];
-            this.Consumers = new IMqttMessageConsumer[0];
+            this.Subscribers = new ISubscriber[0];
+            this.Producers = new IMessageProducer[0];
+            this.Consumers = new IMessageConsumer[0];
         }
 
-        public IReadOnlyCollection<IMqttSubscriber> Subscribers { get; set; }
-        public IReadOnlyCollection<IMqttMessageProducer> Producers { get; set; }    
-        public IReadOnlyCollection<IMqttMessageConsumer> Consumers { get; set; }
+        public IReadOnlyCollection<ISubscriber> Subscribers { get; set; }
+        public IReadOnlyCollection<IMessageProducer> Producers { get; set; }    
+        public IReadOnlyCollection<IMessageConsumer> Consumers { get; set; }
 
         public DiscoveryStub WithSubscibers(params string[] topics)
         {
@@ -310,14 +310,14 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter.Test
             return this;
         }
 
-        public DiscoveryStub WithProducer(IMqttMessageProducer producer)
+        public DiscoveryStub WithProducer(IMessageProducer producer)
         {
             this.Producers = this.Producers.Concat(new[] { producer }).ToArray();
             return this;
         }
     }
 
-    public class ConsumerStub : IMqttMessageConsumer
+    public class ConsumerStub : IMessageConsumer
     {
         readonly Func<MqttPublishInfo, Task<bool>> handler;
 
@@ -325,12 +325,12 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter.Test
         public Task<bool> HandleAsync(MqttPublishInfo publishInfo) => this.handler(publishInfo);
     }
 
-    public class SubscriberStub : IMqttSubscriber
+    public class SubscriberStub : ISubscriber
     {
         public IReadOnlyCollection<string> Subscriptions { get; set; }
     }
 
-    public class ProducerStub : IMqttMessageProducer
+    public class ProducerStub : IMessageProducer
     {
         IMqttBridgeConnector connector;
 

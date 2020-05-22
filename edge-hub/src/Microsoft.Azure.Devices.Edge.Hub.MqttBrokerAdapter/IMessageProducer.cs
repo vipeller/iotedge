@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved.
 namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
 {
-    public interface IMqttMessageProducer
+    public interface IMessageProducer
     {
         void SetConnector(IMqttBridgeConnector connector);
     }

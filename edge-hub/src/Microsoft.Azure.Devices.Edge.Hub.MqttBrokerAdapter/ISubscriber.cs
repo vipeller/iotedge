@@ -3,7 +3,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
 {
     using System.Collections.Generic;
 
-    public interface IMqttSubscriber
+    public interface ISubscriber
     {
         IReadOnlyCollection<string> Subscriptions { get; }
     }

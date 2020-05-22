@@ -5,8 +5,8 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
 
     public interface IComponentDiscovery
     {
-        IReadOnlyCollection<IMqttSubscriber> Subscribers { get; }
-        IReadOnlyCollection<IMqttMessageProducer> Producers { get; }
-        IReadOnlyCollection<IMqttMessageConsumer> Consumers { get; }
+        IReadOnlyCollection<ISubscriber> Subscribers { get; }
+        IReadOnlyCollection<IMessageProducer> Producers { get; }
+        IReadOnlyCollection<IMessageConsumer> Consumers { get; }
     }
 }

@@ -6,7 +6,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
     using System.Text;
     using System.Threading.Tasks;
 
-    public class DeleteThisDummyProducer : IMqttSubscriber, IMqttMessageProducer, IMqttMessageConsumer
+    public class DeleteThisDummyProducer : ISubscriber, IMessageProducer, IMessageConsumer
     {
         IMqttBridgeConnector connector;
 
