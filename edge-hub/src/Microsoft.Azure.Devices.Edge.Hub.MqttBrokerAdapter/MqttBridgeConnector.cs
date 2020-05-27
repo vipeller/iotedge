@@ -20,8 +20,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
 
         readonly IComponentDiscovery components;
 
-        // List of message ACK waiting on. Although the code that uses the collection is guarded by a lock, still using
-        // Concurrent dictionarty to have 'TryAdd'
+        // FIXME change it back to Dictionary once migrated to newer framework. Using it only for TryAdd()
         readonly ConcurrentDictionary<ushort, TaskCompletionSource<bool>> pendingAcks = new ConcurrentDictionary<ushort, TaskCompletionSource<bool>>();
 
         readonly object guard = new object();
@@ -61,24 +60,9 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
                 client = this.mqttClient.Expect(() => new Exception("No mqtt-bridge connector instance found to setup"));
             }
 
-            // if ConnectAsync is supposed to manage starting it with broker down,
-            // put a look here to keep trying - see 'TriggerReconnect' below
-            var isConnected = await TryConnectAsync(client, this.components.Subscribers);
-
-            if (!isConnected)
-            {
-                lock (this.guard)
-                {
-                    this.mqttClient = Option.None<MqttClient>();
-                }
-
-                throw new Exception("Failed to start mqtt-bridge connector");
-            }
-
             client.MqttMsgPublished += this.ConfirmPublished;
             client.MqttMsgPublishReceived += this.ForwardPublish;
-            client.ConnectionClosed += this.TriggerReconnect;
-
+            
             this.publications = Option.Some(Channel.CreateUnbounded<MqttPublishInfo>(
                                     new UnboundedChannelOptions
                                     {
@@ -87,6 +71,27 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
                                     }));
 
             this.forwardingLoop = Option.Some(this.StartForwardingLoop());
+
+            // if ConnectAsync is supposed to manage starting it with broker down,
+            // put a loop here to keep trying - see 'TriggerReconnect' below
+            var isConnected = await TryConnectAsync(client, this.components.Subscribers);
+
+            if (!isConnected)
+            {
+                client.MqttMsgPublished -= this.ConfirmPublished;
+                client.MqttMsgPublishReceived -= this.ForwardPublish;
+
+                await StopForwardingLoopAsync();
+                
+                lock (this.guard)
+                {
+                    this.mqttClient = Option.None<MqttClient>();
+                }
+
+                throw new Exception("Failed to start mqtt-bridge connector");
+            }
+
+            client.ConnectionClosed += this.TriggerReconnect;
 
             Events.Started();
         }
@@ -114,12 +119,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
 
                             c.Disconnect();
 
-                            this.publications.ForEach(channel => channel.Writer.Complete());
-
-                            await this.forwardingLoop.ForEachAsync(loop => loop);
-
-                            this.forwardingLoop = Option.None<Task>();
-                            this.publications = Option.None<Channel<MqttPublishInfo>>();
+                            await StopForwardingLoopAsync();
 
                             Events.Closed();
                         },
@@ -284,6 +284,16 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
             {
                 return new Exception("Channel is broken, exiting forwarding loop by error");
             }
+        }
+
+        async Task StopForwardingLoopAsync()
+        {
+            this.publications.ForEach(channel => channel.Writer.Complete());
+
+            await this.forwardingLoop.ForEachAsync(loop => loop);
+
+            this.forwardingLoop = Option.None<Task>();
+            this.publications = Option.None<Channel<MqttPublishInfo>>();
         }
 
         // these are statics, so they don't use the state to acquire 'client' - making easier to handle parallel

@@ -11,8 +11,8 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Service.Modules
 
     class MqttBridgeModule : Module
     {
-        static readonly int defaultPort = 8000;
-        static readonly string defaultUrl = "localhost";
+        static readonly int defaultPort = 1883;
+        static readonly string defaultUrl = "127.0.0.1";
 
         readonly IConfiguration config;
 

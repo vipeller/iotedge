@@ -22,14 +22,14 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
         {
             this.connector = connector;
 
-            Task.Run(async () =>
-            {
-                while (true)
-                {
-                    await Task.Delay(5000);
-                    await this.connector.SendAsync("dummytopic", Encoding.ASCII.GetBytes("repaszag"));
-                }
-            });
+         //   Task.Run(async () =>
+         //   {
+         //       while (true)
+         //       {
+         //           await Task.Delay(60000);
+         //           await this.connector.SendAsync("dummytopic", Encoding.ASCII.GetBytes("repaszag"));
+         //       }
+         //   });
         }
     }
 }
