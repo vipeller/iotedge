@@ -2,6 +2,7 @@
 namespace Microsoft.Azure.Devices.Edge.Hub.Service.Modules
 {
     using System;
+    using System.Collections.Generic;
     using System.Linq;
     using Autofac;
     using Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter;
@@ -14,6 +15,8 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Service.Modules
         static readonly int defaultPort = 1883;
         static readonly string defaultUrl = "127.0.0.1";
 
+        static readonly Type[] StandardBridgeInterfaces = { typeof(IMessageConsumer), typeof(IMessageProducer), typeof(ISubscriber) };
+
         readonly IConfiguration config;
 
         public MqttBridgeModule(IConfiguration config)
@@ -24,7 +27,21 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Service.Modules
         protected override void Load(ContainerBuilder builder)
         {
             var componentTypes = MqttBridgeComponentDiscovery.GetCandidateTypes().ToArray();
-            builder.RegisterTypes(componentTypes).AsSelf();
+
+            // The classes will be registered by two types:
+            // 1) by its own type - that is because the connector is going to
+            //    request an instance by the type name as it finds ISubscriber, etc
+            //    derived types.
+            // 2) by every interface name that is not IMessageConsumer/Producer/ISubscriber.
+            //    That is because some of the producers/consumers are also special services
+            //    and components will need those injected by custom interfaces.
+            builder.RegisterTypes(componentTypes)
+                   .AsSelf()
+                   .As(t => GetNonStandardBridgeInterfaces(t))
+                   .SingleInstance();
+
+            builder.RegisterType<DeviceProxy>()
+                   .AsSelf();
 
             builder.Register(
                         c =>
@@ -49,5 +66,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Service.Modules
 
             base.Load(builder);
         }
+
+        static IEnumerable<Type> GetNonStandardBridgeInterfaces(Type type) => type.GetInterfaces().Where(t => !StandardBridgeInterfaces.Contains(t));
     }
 }

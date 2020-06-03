@@ -33,6 +33,8 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
         {
             this.components = components;
 
+            // because of the circular dependency between MqttBridgeConnector and the producers,
+            // in this loop the producers get the IMqttBridgeConnector reference:
             foreach (var producer in components.Producers)
             {
                 producer.SetConnector(this);
@@ -263,8 +265,8 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
                                         {
                                             try
                                             {
-                                                await consumer.HandleAsync(publishInfo);
-                                                Events.MessageForwarded(publishInfo.Topic, publishInfo.Payload.Length);
+                                                var accepted = await consumer.HandleAsync(publishInfo);
+                                                Events.MessageForwarded(consumer.GetType().Name, accepted, publishInfo.Topic, publishInfo.Payload.Length);
                                             }
                                             catch (Exception e)
                                             {
@@ -415,7 +417,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
             public static void CouldNotForwardMessage(string topic, int len) => Log.LogWarning((int)EventIds.CouldNotForwardMessage, "Could not forward MQTT message from connector. Topic [{0}], Msg. len [{1}] bytes", topic, len);
             public static void ForwardingLoopStarted() => Log.LogInformation((int)EventIds.ForwardingLoopStarted, "Forwarding loop started");
             public static void ForwardingLoopStopped() => Log.LogInformation((int)EventIds.ForwardingLoopStopped, "Forwarding loop stopped");
-            public static void MessageForwarded(string topic, int len) => Log.LogDebug((int)EventIds.MessageForwarded, "Message forwarded. Topic [{0}], Msg. len [{1}] bytes", topic, len);
+            public static void MessageForwarded(string consumer, bool accepted, string topic, int len) => Log.LogDebug((int)EventIds.MessageForwarded, "Message forwarded to [{0}] and it [{1}]. Topic [{2}], Msg. len [{3}] bytes", consumer, accepted ? "accepted" : "ignored", topic, len);
             public static void FailedToForward(Exception e) => Log.LogError((int)EventIds.FailedToForward, e, "Failed to forward message.");
         }
     }

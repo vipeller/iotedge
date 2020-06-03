@@ -23,6 +23,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
         static readonly string[] subscriptions = new[] { TopicDeviceConnected };
 
         readonly IConnectionProvider connectionProvider;
+        readonly DeviceProxy.Factory deviceProxyFactory;
 
         AsyncLock guard = new AsyncLock();
 
@@ -32,9 +33,16 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
         // this class is auto-registered so no way to implement an async activator.
         // hence this one needs to get a Task<T> which is suboptimal, but that is the way
         // IConnectionProvider is registered
-        public ConnectionHandler(Task<IConnectionProvider> connectionProvider)
+        public ConnectionHandler(Task<IConnectionProvider> connectionProvider, DeviceProxy.Factory deviceProxyFactory)
         {
+            if (!connectionProvider.IsCompleted)
+            {
+                // if this leads to a dead-lock, at least it gets logged.
+                Events.BlockingDependencyInjection();
+            }
+
             this.connectionProvider = connectionProvider.Result;
+            this.deviceProxyFactory = deviceProxyFactory;
         }
 
         public IReadOnlyCollection<string> Subscriptions => subscriptions;
@@ -75,22 +83,24 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
             switch (publishInfo.Topic)
             {
                 case TopicDeviceConnected:
-                    return this.HandleDeviceConnectedAsync(publishInfo);
+                    // FIXME: a bit worried about that letting it fire and forget,
+                    // events can pass each other. this means that in theory it is possible
+                    // that an earlier event gets processed later, setting the actual connection
+                    // state obsolete.
+                    // Maybe the solution would be adding a counter to the package here, as at
+                    // this point we are still ordered.
+                    _ = this.HandleDeviceConnectedAsync(publishInfo);
+                    return Task.FromResult(true);
 
                 default:
-                    return Task.FromResult(true);
+                    return Task.FromResult(false);
             }
         }
 
-        async Task<bool> HandleDeviceConnectedAsync(MqttPublishInfo mqttPublishInfo)
+        async Task HandleDeviceConnectedAsync(MqttPublishInfo mqttPublishInfo)
         {            
             var updatedIdentities = GetIdentitiesFromUpdateMessage(mqttPublishInfo);
-
             await updatedIdentities.ForEachAsync(async i => await ReconcileConnectionsAsync(new HashSet<IIdentity>(i)));
-
-           // await deviceListener.SendGetTwinRequest("abcde");
-
-            return true;
         }
 
         async Task ReconcileConnectionsAsync(HashSet<IIdentity> updatedIdentities)
@@ -133,7 +143,8 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
             foreach (var identity in identitiesAdded)
             {
                 var deviceListener = await this.connectionProvider.GetDeviceListenerAsync(identity);
-                var deviceProxy = new DeviceProxy(identity);
+                var deviceProxy = this.deviceProxyFactory(identity);
+
                 deviceListener.BindDeviceProxy(deviceProxy);
 
                 var previousListener = default(IDeviceListener);
@@ -207,13 +218,15 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
                 BadPayloadFormat = IdStart,
                 BadIdentityFormat,
                 UnknownClientDisconnected,
-                ExistingClientAdded
+                ExistingClientAdded,
+                BlockingDependencyInjection
             }
 
             public static void BadPayloadFormat(Exception e) => Log.LogError((int)EventIds.BadPayloadFormat, e, "Bad payload format: cannot deserialize connection update");
             public static void BadIdentityFormat(string identity) => Log.LogError((int)EventIds.BadIdentityFormat, $"Bad identity format: {identity}");
             public static void UnknownClientDisconnected(string identity) => Log.LogWarning((int)EventIds.UnknownClientDisconnected, $"Received disconnect notification about a not-connected client {identity}");
             public static void ExistingClientAdded(string identity) => Log.LogWarning((int)EventIds.ExistingClientAdded, $"Received connect notification about a already-connected client {identity}");
+            public static void BlockingDependencyInjection() => Log.LogWarning((int)EventIds.BlockingDependencyInjection, $"Blocking dependency injection as IConnectionProvider is not available at the time");
         }
     }
 }

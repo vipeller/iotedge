@@ -8,5 +8,6 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
         public const int MqttBridgeConnector = EventIdStart + 50;
         public const int ConnectionHandler = EventIdStart + 100;
         public const int DeviceProxy = EventIdStart + 150;
+        public const int TwinHandler = EventIdStart + 200;
     }
 }

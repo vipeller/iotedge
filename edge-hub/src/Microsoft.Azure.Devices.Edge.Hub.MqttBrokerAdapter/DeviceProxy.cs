@@ -14,10 +14,14 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
     {
         readonly AtomicBoolean isActive;
         readonly IIdentity identity;
+        readonly ITwinHandler twinHandler;
+        
+        public delegate DeviceProxy Factory(IIdentity identity);
 
-        public DeviceProxy(IIdentity identity)
+        public DeviceProxy(IIdentity identity, ITwinHandler twinHandler)
         {
             this.identity = identity;
+            this.twinHandler = twinHandler;
             this.isActive = new AtomicBoolean(true);
 
             Events.Created(this.identity);
@@ -65,7 +69,8 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
 
         public Task SendTwinUpdate(IMessage twin)
         {
-            return Task.FromResult(true);
+            Events.SendingTwinUpdate(this.Identity);
+            return this.twinHandler.SendTwinUpdate(twin, this.identity);
         }
 
         public void SetInactive()
@@ -84,11 +89,13 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
                 Created = IdStart,
                 Close,
                 SetInactive,
+                SendingTwinUpdate
             }
 
             public static void Created(IIdentity identity) => Log.LogInformation((int)EventIds.Created, $"Created device proxy for {identity.IotHubHostName}/{identity.Id}");
             public static void Close(IIdentity identity) => Log.LogInformation((int)EventIds.Close, $"Closed device proxy for {identity.IotHubHostName}/{identity.Id}");
             public static void SetInactive(IIdentity identity) => Log.LogInformation((int)EventIds.Close, $"Inactivated device proxy for {identity.IotHubHostName}/{identity.Id}");
+            public static void SendingTwinUpdate(IIdentity identity) => Log.LogDebug((int)EventIds.SendingTwinUpdate, $"Sending twin update to {identity.Id}");
         }
     }
 }
