@@ -110,9 +110,9 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
                 SendingModuleToModuleMessage
             }
 
-            public static void Created(IIdentity identity) => Log.LogInformation((int)EventIds.Created, $"Created device proxy for {identity.IotHubHostName}/{identity.Id}");
-            public static void Close(IIdentity identity) => Log.LogInformation((int)EventIds.Close, $"Closed device proxy for {identity.IotHubHostName}/{identity.Id}");
-            public static void SetInactive(IIdentity identity) => Log.LogInformation((int)EventIds.Close, $"Inactivated device proxy for {identity.IotHubHostName}/{identity.Id}");
+            public static void Created(IIdentity identity) => Log.LogInformation((int)EventIds.Created, $"Created device proxy for {identity.IotHubHostname}/{identity.Id}");
+            public static void Close(IIdentity identity) => Log.LogInformation((int)EventIds.Close, $"Closed device proxy for {identity.IotHubHostname}/{identity.Id}");
+            public static void SetInactive(IIdentity identity) => Log.LogInformation((int)EventIds.Close, $"Inactivated device proxy for {identity.IotHubHostname}/{identity.Id}");
             public static void SendingTwinUpdate(IIdentity identity) => Log.LogDebug((int)EventIds.SendingTwinUpdate, $"Sending twin update to {identity.Id}");
             public static void SendingDesiredPropertyUpdate(IIdentity identity) => Log.LogDebug((int)EventIds.SendingDesiredPropertyUpdate, $"Sending desired property update to {identity.Id}");
             public static void SendingC2DMessage(IIdentity identity) => Log.LogDebug((int)EventIds.SendingC2DMessage, $"Sending C2D message to {identity.Id}");

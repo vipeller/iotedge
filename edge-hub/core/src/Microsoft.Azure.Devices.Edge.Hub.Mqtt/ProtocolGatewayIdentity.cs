@@ -5,7 +5,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Mqtt
     using Microsoft.Azure.Devices.Edge.Util;
     using Microsoft.Azure.Devices.ProtocolGateway.Identity;
 
-    class ProtocolGatewayIdentity : IDeviceIdentity
+    public class ProtocolGatewayIdentity : IDeviceIdentity
     {
         public ProtocolGatewayIdentity(IClientCredentials clientCredentials, Option<string> modelId)
         {
