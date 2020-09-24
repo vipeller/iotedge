@@ -16,6 +16,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Service.Modules
     using Microsoft.Azure.Devices.Edge.Hub.Core.Storage;
     using Microsoft.Azure.Devices.Edge.Hub.Core.Twin;
     using Microsoft.Azure.Devices.Edge.Hub.Mqtt;
+    using Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter;
     using Microsoft.Azure.Devices.Edge.Storage;
     using Microsoft.Azure.Devices.Edge.Util;
     using Microsoft.Azure.Devices.Edge.Util.TransientFaultHandling;
@@ -213,7 +214,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Service.Modules
                     })
                 .As<IClientProvider>()
                 .SingleInstance();
-
+            /*
             // Task<ICloudConnectionProvider>
             builder.Register(
                     async c =>
@@ -245,6 +246,15 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Service.Modules
                             metadataStore,
                             this.nestedEdgeEnabled);
                         return cloudConnectionProvider;
+                    })
+                .As<Task<ICloudConnectionProvider>>()
+                .SingleInstance();
+            */
+
+            builder.Register(
+                    c =>
+                    {
+                        return Task.FromResult(new PocCloudConnectionProvider(c.Resolve<PocCloudProxyDispatcher>()) as ICloudConnectionProvider);
                     })
                 .As<Task<ICloudConnectionProvider>>()
                 .SingleInstance();

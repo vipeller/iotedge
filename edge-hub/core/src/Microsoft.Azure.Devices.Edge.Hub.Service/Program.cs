@@ -97,8 +97,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Service
             logger.LogInformation("Initializing configuration");
             IConfigSource configSource = await container.Resolve<Task<IConfigSource>>();
             ConfigUpdater configUpdater = await container.Resolve<Task<ConfigUpdater>>();
-            await configUpdater.Init(configSource);
-
+           
             if (!Enum.TryParse(configuration.GetValue("AuthenticationMode", string.Empty), true, out AuthenticationMode authenticationMode)
                 || authenticationMode != AuthenticationMode.Cloud)
             {
@@ -115,6 +114,10 @@ namespace Microsoft.Azure.Devices.Edge.Hub.Service
                 try
                 {
                     await protocolHead.StartAsync();
+
+                    await Task.Delay(10000);
+                    await configUpdater.Init(configSource);
+
                     await Task.WhenAny(cts.Token.WhenCanceled(), renewal.Token.WhenCanceled());
                 }
                 catch (Exception ex)

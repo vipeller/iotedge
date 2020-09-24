@@ -21,6 +21,8 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
         readonly IComponentDiscovery components;
         readonly ISystemComponentIdProvider systemComponentIdProvider;
         readonly Dictionary<ushort, TaskCompletionSource<bool>> pendingAcks = new Dictionary<ushort, TaskCompletionSource<bool>>();
+        readonly Dictionary<ushort, TaskCompletionSource<bool>> pendingSubacks = new Dictionary<ushort, TaskCompletionSource<bool>>();
+        readonly Dictionary<ushort, TaskCompletionSource<bool>> pendingUnsubacks = new Dictionary<ushort, TaskCompletionSource<bool>>();
 
         readonly object guard = new object();
 
@@ -31,6 +33,9 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
         AtomicBoolean isRetrying = new AtomicBoolean(false);
 
         public event EventHandler OnConnected;
+
+        readonly TaskCompletionSource<bool> betterOnConnected = new TaskCompletionSource<bool>();
+        public TaskCompletionSource<bool> BetterOnConnected => betterOnConnected;
 
         public MqttBrokerConnector(IComponentDiscovery components, ISystemComponentIdProvider systemComponentIdProvider)
         {
@@ -65,6 +70,8 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
 
             client.MqttMsgPublished += this.ConfirmPublished;
             client.MqttMsgPublishReceived += this.ForwardPublish;
+            client.MqttMsgSubscribed += this.ConfirmSubscribed;
+            client.MqttMsgUnsubscribed += this.ConfirmUnsubscribed;
 
             this.publications = Option.Some(Channel.CreateUnbounded<MqttPublishInfo>(
                                     new UnboundedChannelOptions
@@ -83,6 +90,8 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
             {
                 client.MqttMsgPublished -= this.ConfirmPublished;
                 client.MqttMsgPublishReceived -= this.ForwardPublish;
+                client.MqttMsgSubscribed += this.ConfirmSubscribed;
+                client.MqttMsgUnsubscribed += this.ConfirmUnsubscribed;
 
                 await this.StopForwardingLoopAsync();
 
@@ -104,6 +113,7 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
                 this.TriggerReconnect(this, new EventArgs());
             }
 
+            this.BetterOnConnected.SetResult(true);
             this.OnConnected?.Invoke(this, EventArgs.Empty);
             Events.Started();
         }
@@ -160,7 +170,19 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
                     tcs.SetCanceled();
                 }
 
-                this.pendingAcks.Clear();
+                foreach (var tcs in this.pendingSubacks.Values)
+                {
+                    tcs.SetCanceled();
+                }
+
+                foreach (var tcs in this.pendingUnsubacks.Values)
+                {
+                    tcs.SetCanceled();
+                }
+
+                this.pendingAcks.Clear();                
+                this.pendingSubacks.Clear();
+                this.pendingUnsubacks.Clear();
             }
         }
 
@@ -192,6 +214,56 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
             return result;
         }
 
+        public async Task<bool> SubscribeAsync(string topic)
+        {
+            var client = this.mqttClient.Expect(() => new Exception("No mqtt-bridge connector instance found to send messages."));
+
+            var added = default(bool);
+            var tcs = new TaskCompletionSource<bool>();
+
+            // need the lock, otherwise it can happen the ACK comes back sooner as the id is
+            // put into the dictionary next line, causing the ACK being unknown.
+            lock (this.guard)
+            {
+                var subscriptionId = client.Subscribe(new[] { topic }, new[] { (byte)1 });
+                added = this.pendingSubacks.TryAdd(subscriptionId, tcs);
+            }
+
+            if (!added)
+            {
+                new Exception("Could not store subscription id to monitor Mqtt SUBACK");
+            }
+
+            var result = await tcs.Task;
+
+            return result;
+        }
+
+        public async Task<bool> UnsubscribeAsync(string topic)
+        {
+            var client = this.mqttClient.Expect(() => new Exception("No mqtt-bridge connector instance found to send messages."));
+
+            var added = default(bool);
+            var tcs = new TaskCompletionSource<bool>();
+
+            // need the lock, otherwise it can happen the ACK comes back sooner as the id is
+            // put into the dictionary next line, causing the ACK being unknown.
+            lock (this.guard)
+            {
+                var subscriptionId = client.Unsubscribe(new[] { topic });
+                added = this.pendingUnsubacks.TryAdd(subscriptionId, tcs);
+            }
+
+            if (!added)
+            {
+                new Exception("Could not store subscription id to monitor Mqtt UNSUBACK");
+            }
+
+            var result = await tcs.Task;
+
+            return result;
+        }
+
         void ForwardPublish(object sender, MqttMsgPublishEventArgs e)
         {
             var isWritten = this.publications.Match(
@@ -212,6 +284,36 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
                 if (this.pendingAcks.TryRemove(e.MessageId, out TaskCompletionSource<bool> tcs))
                 {
                     tcs.SetResult(e.IsPublished);
+                }
+                else
+                {
+                    Events.UnknownMessageId(e.MessageId);
+                }
+            }
+        }
+
+        void ConfirmSubscribed(object sender, MqttMsgSubscribedEventArgs e)
+        {
+            lock (this.guard)
+            {
+                if (this.pendingSubacks.TryRemove(e.MessageId, out TaskCompletionSource<bool> tcs))
+                {
+                    tcs.SetResult(true);
+                }
+                else
+                {
+                    Events.UnknownMessageId(e.MessageId);
+                }
+            }
+        }
+
+        void ConfirmUnsubscribed(object sender, MqttMsgUnsubscribedEventArgs e)
+        {
+            lock (this.guard)
+            {
+                if (this.pendingSubacks.TryRemove(e.MessageId, out TaskCompletionSource<bool> tcs))
+                {
+                    tcs.SetResult(true);
                 }
                 else
                 {
@@ -284,6 +386,8 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
 
         Task StartForwardingLoop()
         {
+            int fwdcnt = 1;
+
             var loopTask = Task.Run(
                                 async () =>
                                 {
@@ -307,7 +411,9 @@ namespace Microsoft.Azure.Devices.Edge.Hub.MqttBrokerAdapter
                                         {
                                             try
                                             {
+                                                Console.WriteLine("##################FORWARD CALLED {0} {1}", fwdcnt, consumer.GetType().Name);
                                                 accepted = await consumer.HandleAsync(publishInfo);
+                                                Console.WriteLine("##################FORWARD RETURNED {0} {1}", fwdcnt++, consumer.GetType().Name);
                                                 if (accepted)
                                                 {
                                                     Events.MessageForwarded(consumer.GetType().Name, accepted, publishInfo.Topic, publishInfo.Payload.Length);
